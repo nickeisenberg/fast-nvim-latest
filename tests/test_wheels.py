@@ -7,13 +7,16 @@ is worse than none.
 
 from __future__ import annotations
 
+import ast
 import io
 import json
+import re
 import stat
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import List, Tuple
 
 import pytest
 
@@ -27,6 +30,7 @@ from fast_nvim_release.platforms import (
 )
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+TESTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -536,6 +540,120 @@ def test_a_release_is_only_published_after_the_suite_and_a_smoke_test():
     # and before anything is uploaded, not after
     assert build.index("python -m pytest") < build.index("check_wheels.py")
     assert build.index("scripts/smoke_test.py") < build.index("upload-artifact")
+
+
+# --------------------------------------------------------------------------
+# guards for the regressions the CI matrix caught (py3.9 + Windows)
+# --------------------------------------------------------------------------
+TOOL_SPEC = re.compile(
+    r'(?P<name>[A-Za-z0-9_.-]+)==(?P<version>[^"\s;]+)'
+    r"(?:;\s*python_version\s*(?P<op>[<>=!]+)\s*\'(?P<py>[0-9.]+)\')?"
+)
+
+
+def _tool_specs(name: str) -> List[Tuple[str, str, str, str]]:
+    """``(name, version, operator, python_version)`` for every pin in a workflow."""
+    found = []
+    for line in _workflow(name).splitlines():
+        if "pip install" not in line:
+            continue
+        for match in TOOL_SPEC.finditer(line):
+            if match.group("name") == "pip":  # `--upgrade pip` is not a pin
+                continue
+            found.append(
+                (
+                    match.group("name"),
+                    match.group("version"),
+                    match.group("op") or "",
+                    match.group("py") or "",
+                )
+            )
+    return found
+
+
+#: Newest version of each tool that still installs on Python 3.9 (from its
+#: PyPI metadata, checked when the pin was added).  A newer pin needs a
+#: `python_version < '3.10'` fallback, or the 3.9 jobs cannot even start --
+#: which is how `pytest==9.1.1` broke every 3.9 job in "install test tooling".
+NEWEST_ON_PY39 = {"pytest": "8.4.2", "build": "1.4.0", "twine": "6.2.0", "ruff": "0.16.10"}
+
+
+def _version_tuple(text: str) -> Tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+
+
+def test_release_workflow_uses_only_pins_that_ci_validates():
+    """ci.yml runs the full matrix, so a release-only pin would be unproven."""
+    validated = set(_tool_specs("ci.yml"))
+    used = set(_tool_specs("release.yml"))
+    assert used <= validated, f"release.yml pins tools ci.yml does not: {used - validated}"
+
+
+def test_a_pin_that_needs_a_newer_python_has_a_fallback():
+    """3.9 is supported and tested, so every newer-only pin needs a sibling."""
+    specs = _tool_specs("ci.yml")
+    for name in {name for name, _v, _op, _py in specs}:
+        guarded = [(v, op, py) for n, v, op, py in specs if n == name]
+        if any(op == ">=" and py for _v, op, py in guarded):
+            assert any(op == "<" and py for _v, op, py in guarded), (
+                f"{name} is pinned only for newer Pythons; 3.9 jobs cannot install it"
+            )
+
+
+def test_no_unguarded_pin_is_newer_than_python39_supports():
+    """A plain `pytest==9.1.1` also needs the fallback check, marker or not."""
+    problems = []
+    for name, version, op, _py in _tool_specs("ci.yml"):
+        if op:  # marker-guarded: covered by the fallback test above
+            continue
+        ceiling = NEWEST_ON_PY39.get(name)
+        if ceiling is None:
+            problems.append(f"{name} is not in NEWEST_ON_PY39; add it after checking 3.9")
+        elif _version_tuple(version) > _version_tuple(ceiling):
+            problems.append(
+                f"{name}=={version} is newer than {ceiling}, the newest that installs on"
+                " 3.9; add a python_version < '3.10' fallback"
+            )
+    assert problems == []
+
+
+#: Test helpers that execute the vendored binary.  The fake bundle is a POSIX
+#: shell script, so on Windows these raise WinError 216 instead of running.
+RUNS_THE_FAKE_BINARY = {"neovim_version", "runtime_path", "verify_install", "_run"}
+
+
+def _test_functions(path: Path) -> List[ast.FunctionDef]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    ]
+
+
+def test_a_test_that_runs_the_fake_binary_is_posix_only():
+    """Losing a @POSIX_ONLY decorator broke the Windows job once already.
+
+    (Inserting a test above another one silently moves the decorator onto the
+    new function, and the old test then executes a shell script on Windows.)
+    """
+    offenders = []
+    for name in ("test_bundle.py", "test_cli.py"):
+        for function in _test_functions(TESTS / name):
+            runs_binary = any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in RUNS_THE_FAKE_BINARY
+                for node in ast.walk(function)
+            )
+            marked = any(
+                (isinstance(d, ast.Name) and d.id == "POSIX_ONLY")
+                or (isinstance(d, ast.Attribute) and d.attr == "POSIX_ONLY")
+                for d in function.decorator_list
+            )
+            if runs_binary and not marked:
+                offenders.append(f"{name}::{function.name}")
+    assert offenders == []
 
 
 def test_the_lint_and_test_tools_are_pinned():

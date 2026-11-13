@@ -133,6 +133,7 @@ def test_the_fake_bundle_is_runnable(fake_bundle, host_key):
     assert bundle.neovim_version(exe) == f"NVIM {RELEASES[newest].version[1:]}"
 
 
+@POSIX_ONLY
 def test_install_copy(fake_bundle, prefix, host_key):
     target = RELEASES["0.12"].target(host_key)
     result = bundle.install(target, bundle.bundle_path("0.12", host_key), prefix)
