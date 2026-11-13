@@ -437,8 +437,8 @@ def test_ci_failure_annotations_are_extracted_from_a_log(tmp_path, capsys):
     )
     assert annotate_ci_failures.main([str(log)]) == 0
     out = capsys.readouterr().out
-    assert "::error::FAILED tests/test_cli.py::test_x" in out
-    assert "::error::E   RuntimeError: boom" in out
+    assert "::error::[pytest.log] FAILED tests/test_cli.py::test_x" in out
+    assert "::error::[pytest.log] E   RuntimeError: boom" in out
 
 
 def test_ci_annotations_fall_back_to_the_tail_of_the_log(tmp_path, capsys):
@@ -448,7 +448,7 @@ def test_ci_annotations_fall_back_to_the_tail_of_the_log(tmp_path, capsys):
     log.write_text("building...\nexit 1\n", encoding="utf-8")
     assert annotate_ci_failures.main([str(log)]) == 0
     out = capsys.readouterr().out
-    assert "::error::exit 1" in out
+    assert "::error::[validate.log] exit 1" in out
 
 
 def test_an_empty_log_reports_nothing_but_warns(tmp_path, capsys):
