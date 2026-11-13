@@ -165,6 +165,24 @@ def test_the_index_has_to_mention_every_shipped_release(tmp_path):
     assert any("does not mention v0.10.4" in problem for problem in problems)
 
 
+def test_a_wheel_that_skips_a_release_is_reported_as_a_note(tmp_path):
+    """Partial wheels are allowed, but the gap must be visible in the report."""
+    full = fake_wheel(tmp_path, releases=tuple(RELEASE_KEYS))
+    assert check_wheels.missing_releases(full) == []
+
+    partial_dir = tmp_path / "partial"
+    partial_dir.mkdir()
+    partial = fake_wheel(partial_dir, PLATFORMS["windows-x86_64"], releases=(RELEASE_KEYS[-1],))
+    assert check_wheels.missing_releases(partial) == list(RELEASE_KEYS[:-1])
+    assert check_wheels.check(partial) == []  # still valid, just smaller
+
+    # a platform 0.10 never had is not "missing"
+    arm_dir = tmp_path / "arm"
+    arm_dir.mkdir()
+    arm = fake_wheel(arm_dir, PLATFORMS["windows-arm64"], releases=("0.11", "0.12"))
+    assert check_wheels.missing_releases(arm) == []
+
+
 def test_garbage_is_reported_not_raised(tmp_path):
     broken = tmp_path / f"fast_nvim_release-{__version__}-py3-none-{WIN.wheel_tag}.whl"
     broken.write_bytes(b"not a zip")
