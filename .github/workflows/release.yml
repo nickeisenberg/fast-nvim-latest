@@ -39,18 +39,22 @@ jobs:
       - name: install tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build twine
+          python -m pip install pytest==9.1.1 build==1.6.1 twine==7.0.0
+      - name: unit tests
+        run: python -m pytest -q
       - name: restore the Neovim archive cache
         uses: actions/cache@v4
         with:
           path: ${{ env.NVIM_CACHE }}
-          key: nvim-linux-${{ hashFiles('src/fast_nvim_release/platforms.py') }}
+          key: nvim-linux-${{ runner.arch }}-${{ hashFiles('src/fast_nvim_release/platforms.py') }}
       - name: build one wheel per platform
         run: python scripts/build_wheels.py --all
       - name: validate metadata, payloads and tags
         run: |
           python -m twine check dist/*
           python scripts/check_wheels.py
+      - name: install the linux wheel in a clean venv and use it
+        run: python scripts/smoke_test.py
       - uses: actions/upload-artifact@v4
         with:
           name: wheels
