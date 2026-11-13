@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build one wheel per platform, each carrying exactly one Neovim build.
+"""Build one wheel per platform, each carrying that platform's releases.
 
 Usage
 -----

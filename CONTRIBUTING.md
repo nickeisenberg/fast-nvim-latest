@@ -5,7 +5,7 @@
 ```console
 $ git clone git@github.com:nickeisenberg/fast-nvim-release.git
 $ cd fast-nvim-release
-$ python -m pytest                 # 181 tests, no network needed
+$ python -m pytest                 # the whole suite, no network needed
 $ python -m ruff check .           # lint (CI runs this)
 $ python -m ruff format --check .
 ```

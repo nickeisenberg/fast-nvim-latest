@@ -545,6 +545,9 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--json", action="store_true")
     version.set_defaults(func=cmd_version)
 
+    # `main` handles `run` itself, so this parser is never used to parse
+    # arguments -- it exists so the command (and its help text) shows up in
+    # `--help`.  Anything after `run` belongs to Neovim, `--help` included.
     run = subparsers.add_parser(
         "run",
         help="run a bundled nvim without installing it",
