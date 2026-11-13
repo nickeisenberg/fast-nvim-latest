@@ -34,8 +34,8 @@ PROG = "fast-nvim-release"
 
 EXAMPLES = """examples:
   pip install fast-nvim-release
-  fast-nvim-release setup                 # newest bundled release into ~/.local
-  fast-nvim-release setup 0.10            # an older Neovim line
+  fast-nvim-release setup --prefix ~/.local            # newest bundled release
+  fast-nvim-release setup 0.10 --prefix ~/nvim-0-10    # an older Neovim line
   fast-nvim-release setup 0.12 windows --prefix ./dist-win
   fast-nvim-release run 0.10 -- --version
 """
@@ -144,23 +144,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     release_key, platform_spec = _split_selectors(args.selectors)
     target = parse_target(platform_spec, args.arch, release_key)
-    prefix = bundle.normalize(args.prefix) if args.prefix else bundle.default_prefix()
+    if not args.prefix:
+        fail(
+            "setup needs an explicit --prefix; there is no default install location.\n"
+            f"  e.g. {PROG} setup --prefix ~/.local"
+        )
+    prefix = bundle.normalize(args.prefix)
 
     cross = is_cross(target)
     problem = glibc_problem(target)
     if problem:
         fail(problem)
-    explicit_location = bool(args.prefix) or bool(
-        os.environ.get("FAST_NVIM_RELEASE_PREFIX", "").strip()
-    )
-
-    if cross and not explicit_location:
-        fail(
-            f"{target.key} is not the platform you are on.\n"
-            "  Installing another platform's binary needs an explicit location, e.g.\n"
-            f"  {PROG} setup {target.release_key} {target.family} "
-            f"--prefix ./nvim-{target.key}"
-        )
 
     managed = bundle.is_managed(prefix, target.release_key, target.key)
     others = [
@@ -273,11 +267,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
 def _warn_if_replacing_this_machines_build(prefix: Path, target: Target) -> None:
     """Say so when a cross-platform install takes over the host's prefix.
 
-    ``FAST_NVIM_RELEASE_PREFIX`` (or ``--prefix``) is how a user installs
-    without thinking about the destination, so a cross-platform build aimed at
-    the same prefix silently leaves them without a Neovim for the machine they
-    are sitting at.  The install still happens -- it was asked for -- but not
-    quietly.
+    A prefix holds one Neovim, so a cross-platform build aimed at a prefix that
+    already holds this machine's build silently leaves the user without a Neovim
+    for the machine they are sitting at.  The install still happens -- it was
+    asked for -- but not quietly.
     """
     here = host_platform()
     if here is None or target.key == here.key:
@@ -513,15 +506,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     setup = subparsers.add_parser(
         "setup",
-        help="install a release into a prefix (default: newest release, ~/.local)",
+        help="install a release into a prefix (default: newest release)",
         description="Install Neovim into a prefix so `nvim` is usable on PATH. "
+        "The prefix is always explicit, so nothing is overwritten by accident. "
         "Older release lines come from GitHub (checksum-pinned) and are cached.",
     )
     setup.add_argument("selectors", nargs="*", metavar="RELEASE|PLATFORM", help=selector_help)
     setup.add_argument("--arch", help="x86_64/amd64 or arm64/aarch64")
+    # not `required=True`: `setup --list` installs nothing and needs no prefix
     setup.add_argument(
         "--prefix",
-        help="install prefix (default: $FAST_NVIM_RELEASE_PREFIX or ~/.local)",
+        help="install prefix (required unless --list; there is no default)",
     )
     setup.add_argument("--force", action="store_true", help="overwrite existing files")
     setup.add_argument(

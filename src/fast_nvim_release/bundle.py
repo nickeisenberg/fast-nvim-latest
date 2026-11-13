@@ -167,9 +167,12 @@ def cached_tree(target: Target) -> Path:
 
 
 def default_prefix() -> Path:
-    override = os.environ.get("FAST_NVIM_RELEASE_PREFIX")
-    if override:
-        return normalize(override)
+    """Where ``path`` and ``version`` look when no ``--prefix`` is given.
+
+    Only the read-only commands have a default: ``setup`` always needs an
+    explicit prefix, so nothing is installed into a location the user did not
+    name.
+    """
     if sys.platform in ("win32", "cygwin", "msys"):
         base = os.environ.get("LOCALAPPDATA")
         root = Path(base) if base else Path.home() / "AppData" / "Local"

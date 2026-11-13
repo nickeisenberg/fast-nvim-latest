@@ -124,6 +124,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             if release_key not in listing:
                 fail(f"setup --list does not mention release {release_key}", result.stdout)
 
+        # `setup` must never pick an install location on its own
+        result = run([console, "setup", "--dry-run"])
+        if not result.returncode:
+            fail("`fast-nvim-release setup` without --prefix did not fail", result.stdout)
+        if b"--prefix" not in result.stdout:
+            fail("`setup` without --prefix does not say --prefix is required", result.stdout)
+
         # walk every release bundled for this platform, newest last
         installed_versions = {}
         for label in bundled_targets:

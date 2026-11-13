@@ -152,18 +152,26 @@ def test_setup_list_shows_every_release(fake_bundle, capsys):
     assert "default" in out
 
 
+def test_setup_requires_an_explicit_prefix(fake_bundle, capsys):
+    """There is no default install location, so `setup` alone must fail."""
+    with pytest.raises(SystemExit) as excinfo:
+        main(["setup"])
+    assert excinfo.value.code == 1
+    assert "needs an explicit --prefix" in capsys.readouterr().err
+
+
 def test_setup_cross_platform_needs_a_prefix(fake_bundle, capsys):
     with pytest.raises(SystemExit) as excinfo:
         main(["setup", other_platform(), "--quiet"])
     assert excinfo.value.code == 1
-    assert "not the platform you are on" in capsys.readouterr().err
+    assert "needs an explicit --prefix" in capsys.readouterr().err
 
 
 @POSIX_ONLY
 def test_a_cross_platform_install_warns_before_replacing_this_machines_build(
-    fake_bundle, prefix, capsys, monkeypatch
+    fake_bundle, prefix, capsys
 ):
-    """An env-var prefix + another platform must not quietly cost the user nvim."""
+    """Another platform's build in the same prefix must not quietly cost the user nvim."""
     from conftest import make_bundle
 
     foreign = other_platform()
@@ -172,8 +180,7 @@ def test_a_cross_platform_install_warns_before_replacing_this_machines_build(
     assert main(["setup", NEWEST, "--prefix", str(prefix), "--quiet"]) == 0
     capsys.readouterr()
 
-    monkeypatch.setenv("FAST_NVIM_RELEASE_PREFIX", str(prefix))
-    assert main(["setup", NEWEST, foreign, "--offline", "--quiet"]) == 0
+    assert main(["setup", NEWEST, foreign, "--prefix", str(prefix), "--offline", "--quiet"]) == 0
     err = capsys.readouterr().err
     assert "already holds a Neovim for this machine" in err
     assert "separate --prefix" in err
@@ -370,15 +377,18 @@ def test_dry_run_reports_a_bundled_source(fake_bundle, prefix, capsys):
 # --------------------------------------------------------------------------
 # cross-platform installs
 # --------------------------------------------------------------------------
-def test_cross_platform_uses_the_env_prefix(fake_bundle, tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FAST_NVIM_RELEASE_PREFIX", str(tmp_path / "envprefix"))
+def test_cross_platform_without_a_prefix_is_refused(fake_bundle, capsys):
+    """Another platform's build also needs a destination the user chose.
+
+    The prefix check comes first, so no release, platform or download work can
+    happen before it.
+    """
     with pytest.raises(SystemExit) as excinfo:
         main(["setup", other_platform(), "--offline", "--quiet"])
     assert excinfo.value.code == 1
     err = capsys.readouterr().err
-    # the "needs an explicit --prefix" guard let it through
-    assert "not the platform you are on" not in err
-    assert "not available offline" in err
+    assert "needs an explicit --prefix" in err
+    assert "not available offline" not in err
 
 
 @POSIX_ONLY

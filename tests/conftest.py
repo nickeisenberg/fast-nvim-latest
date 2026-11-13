@@ -115,7 +115,6 @@ def fake_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle, "BUNDLE_ROOT", root)
     monkeypatch.setattr(bundle, "PACKAGE_DIR", tmp_path)
     monkeypatch.setenv("FAST_NVIM_RELEASE_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.delenv("FAST_NVIM_RELEASE_PREFIX", raising=False)
     return root
 
 

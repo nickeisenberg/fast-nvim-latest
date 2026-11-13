@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -256,10 +257,15 @@ def test_download_only_builds_are_never_bundled(tmp_path, monkeypatch, host_key)
     assert bundle.has_bundled(RELEASES["0.10"].target("linux-arm64")) is False
 
 
-def test_default_prefix_can_be_overridden(monkeypatch, tmp_path):
-    wanted = tmp_path / "custom-nvim-prefix"
-    monkeypatch.setenv("FAST_NVIM_RELEASE_PREFIX", str(wanted))
-    assert bundle.default_prefix() == wanted
+def test_default_prefix_ignores_the_environment(monkeypatch, tmp_path):
+    """There is no env override: `--prefix` is the only way to name a prefix."""
+    monkeypatch.setenv("FAST_NVIM_RELEASE_PREFIX", str(tmp_path / "ignored"))
+    if sys.platform in ("win32", "cygwin", "msys"):
+        base = os.environ.get("LOCALAPPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Local"
+        assert bundle.default_prefix() == (root / "fast-nvim-release").absolute()
+    else:
+        assert bundle.default_prefix() == Path.home() / ".local"
 
 
 def test_relative_paths_are_made_absolute(monkeypatch, tmp_path):
