@@ -166,3 +166,20 @@ def test_default_prefix_is_absolute(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert bundle.default_prefix().is_absolute()
+
+
+def test_bin_names_are_compared_the_way_the_file_system_does(
+    fake_bundle, host, prefix, monkeypatch
+):
+    """Windows: 0.10 ships dbghelp.dll, 0.11 DbgHelp.dll -- the same file there."""
+    bundle.install("0.12", host, prefix)
+    marker = prefix / bundle.MARKER
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    data["bin"].append("dbghelp.dll")
+    marker.write_text(json.dumps(data), encoding="utf-8")
+    (prefix / "bin" / "DbgHelp.dll").write_text("ours, other spelling", encoding="utf-8")
+    (fake_bundle / "0.12" / host.key / "bin" / "DbgHelp.dll").write_text("new", encoding="utf-8")
+
+    monkeypatch.setattr(bundle.os.path, "normcase", str.lower)  # as on Windows
+    bundle.install("0.12", host, prefix)
+    assert (prefix / "bin" / "DbgHelp.dll").read_text(encoding="utf-8") == "new"

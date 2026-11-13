@@ -157,10 +157,13 @@ def install(release_key: str, platform: Platform, prefix: Path, *, force: bool =
     managed = bool(_markers(prefix))
 
     if not force:
+        # Windows file names ignore case, and releases differ in how they spell
+        # the same DLL (dbghelp.dll vs DbgHelp.dll)
+        owned_keys = {os.path.normcase(name) for name in owned}
         foreign = [
             prefix / "bin" / name
             for name in names
-            if name not in owned
+            if os.path.normcase(name) not in owned_keys
             and ((prefix / "bin" / name).exists() or (prefix / "bin" / name).is_symlink())
         ]
         if not managed:

@@ -37,6 +37,12 @@ def _tar(path, members, links=()):
     return path
 
 
+#: tarfile extraction filters: 3.12+, backported to 3.9.17+/3.10.12+/3.11.4+;
+#: setup-python's 3.9 on macOS/Windows is 3.9.13, which has none
+NEEDS_TAR_FILTERS = pytest.mark.skipif(
+    not hasattr(tarfile, "data_filter"), reason="this Python has no tarfile filters"
+)
+
 NVIM_TREE = {
     "nvim-linux-x86_64/bin/nvim": b"#!/bin/sh\n",
     "nvim-linux-x86_64/lib/nvim/parser/c.so": b"so",
@@ -45,6 +51,7 @@ NVIM_TREE = {
 }
 
 
+@NEEDS_TAR_FILTERS
 def test_unpack_keeps_only_what_neovim_needs(tmp_path):
     dest = tmp_path / "out"
     fetch_nvim.unpack(_tar(tmp_path / "a.tar.gz", NVIM_TREE), LINUX, dest)
@@ -54,6 +61,7 @@ def test_unpack_keeps_only_what_neovim_needs(tmp_path):
     assert not (dest / "share" / "man").exists()
 
 
+@NEEDS_TAR_FILTERS
 def test_unpack_refuses_links_that_leave_the_archive(tmp_path):
     archive = _tar(
         tmp_path / "evil.tar.gz",
