@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -574,6 +575,75 @@ def test_stale_backups_are_cleaned_where_they_actually_are(tmp_path):
     assert not (root / "0.10" / "linux-x86_64.old").exists()
     assert not (root / "old-layout.old").exists()
     assert (root / "0.10" / "linux-x86_64" / "bin").is_dir()
+
+
+# --------------------------------------------------------------------------
+# two processes must not unpack into one cache entry at the same time
+# --------------------------------------------------------------------------
+def _cache_with_archive(tmp_path, monkeypatch) -> Target:
+    """Put a real, correctly-pinned archive where ``ensure_bundle`` looks."""
+    monkeypatch.setenv("FAST_NVIM_RELEASE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(bundle, "has_bundled", lambda candidate: False)
+    target = _target()
+    archive = bundle.cached_archive(target)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    _tar(archive, {"nvim-linux-x86_64/bin/nvim": (b"#!/bin/sh\n", 0o755)})
+    return _target(
+        sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+        size=archive.stat().st_size,
+    )
+
+
+def test_extraction_into_the_cache_holds_a_lock(tmp_path, monkeypatch):
+    target = _cache_with_archive(tmp_path, monkeypatch)
+    seen = {}
+    real = bundle._lock
+
+    def spy(path, timeout=bundle.LOCK_TIMEOUT):
+        seen["path"] = path
+        return real(path, timeout)
+
+    monkeypatch.setattr(bundle, "_lock", spy)
+    tree, origin = bundle.ensure_bundle(target, offline=True)
+    assert tree == bundle.cached_tree(target)
+    assert origin == "cache"
+    assert seen["path"] == bundle.cache_lock(tree)
+    assert (tree / "bin" / "nvim").is_file()
+    assert not bundle.cache_lock(tree).exists()  # released again
+
+
+@POSIX_ONLY
+def test_two_callers_can_share_one_cache_entry(tmp_path, monkeypatch):
+    """Both callers get a usable tree; the lock keeps them from colliding."""
+    import threading
+    import time
+
+    target = _cache_with_archive(tmp_path, monkeypatch)
+    real = bundle.extract_archive
+
+    def slow(*args, **kwargs):
+        time.sleep(0.2)  # widen the window the lock has to close
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(bundle, "extract_archive", slow)
+    results, errors = [], []
+
+    def work():
+        try:
+            results.append(bundle.ensure_bundle(target, offline=True)[0])
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+
+    assert errors == []
+    assert results == [bundle.cached_tree(target)] * 2
+    assert (bundle.cached_tree(target) / "bin" / "nvim").is_file()
+    assert not list(bundle.cached_tree(target).parent.glob("*.old"))
 
 
 def test_a_broken_archive_does_not_destroy_the_cached_tree(tmp_path):
