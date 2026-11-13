@@ -1,32 +1,38 @@
 # fast-nvim-release
 
-Get the last three minor releases of nvim in under 5 seconds. Works on Linux
-(x86_64, arm64), macOS (Intel, Apple silicon) and Windows (x86_64, arm64).
-It is meant for CI, machines without root, and fresh servers, containers and
-HPC clusters: anywhere pip already works but a package manager does not.
+[![PyPI](https://img.shields.io/pypi/v/fast-nvim-release)](https://pypi.org/project/fast-nvim-release/)
+
+Neovim 0.10, 0.11 and 0.12 from PyPI, in seconds, without root. Works on Linux
+(x86_64, arm64, including RHEL 8-era systems), macOS (Intel, Apple silicon) and
+Windows (x86_64, arm64). It is meant for CI, machines without root, and fresh
+servers, containers and HPC clusters: anywhere pip already works but a package
+manager does not.
 
 ```console
-$ time bash -c 'python -m venv ~/get-nvim && \
-source ~/get-nvim/bin/activate && \
-pip install -q fast-nvim-release && \
-fast-nvim-release setup 0.12 --prefix ~/nvim && \
-~/nvim/bin/nvim --version | head -1' >/dev/null 2>/dev/null
+$ time uvx fast-nvim-release setup 0.12 --prefix ~/.local
+installed Neovim v0.12.6 into /home/you/.local
+  /home/you/.local/bin/nvim
 
-real    0m3.944s
-user    0m3.356s
-sys     0m0.443s
+real    0m2.540s
 ```
+
+That is from a cold start, downloading included. `setup` itself takes about
+0.2 seconds; the rest is fetching the wheel (25–36 MB) from PyPI. With plain
+pip, creating a new venv first, the whole thing takes about 5 seconds.
 
 ## Quickstart
 
 ```console
-$ pip install fast-nvim-release
+$ pip install fast-nvim-release      # or: pipx install / uv tool install fast-nvim-release
 $ fast-nvim-release setup 0.12 --prefix ~/nvim
 installed Neovim v0.12.6 into /home/you/nvim
   /home/you/nvim/bin/nvim
 $ ~/nvim/bin/nvim --version | head -1
 NVIM v0.12.6
 ```
+
+Or in one command, without installing the tool itself:
+`uvx fast-nvim-release setup 0.12 --prefix ~/.local`.
 
 ## Who this is for
 
@@ -36,8 +42,8 @@ pip is already there and only PyPI is reachable. Nothing is downloaded at
 `setup` or `run` time: the binaries are inside the wheel.
 
 **CI: testing a plugin against several Neovim versions.** It was built for the
-CI of [iron.nvim](https://github.com/Vigemus/iron.nvim). The test command below is only an example; use your plugin's
-own.
+CI of [iron.nvim](https://github.com/Vigemus/iron.nvim). The test command below
+is only an example; use your plugin's own.
 
 ```yaml
 jobs:
@@ -58,8 +64,8 @@ jobs:
 Nothing here is specific to GitHub Actions: the same two commands work in
 GitLab CI, Jenkins or a Docker build, wherever there is a Python.
 
-**No root or sudo.** Install for your user (or in a venv, if your system pip
-refuses `--user`) and put Neovim in `~/.local/bin`:
+**No root or sudo.** Install for your user (or with pipx/uv, or in a venv, if
+your system pip refuses `--user`) and put Neovim in `~/.local/bin`:
 
 ```console
 $ pip install --user fast-nvim-release
@@ -68,6 +74,12 @@ $ fast-nvim-release setup --prefix ~/.local
 
 **Fresh servers and containers.** One line, and nothing outside your home is
 touched:
+
+```console
+$ uvx fast-nvim-release setup --prefix ~/.local
+```
+
+Without uv:
 
 ```console
 $ python3 -m venv ~/.venvs/nvim && ~/.venvs/nvim/bin/pip install -q fast-nvim-release && ~/.venvs/nvim/bin/fast-nvim-release setup --prefix ~/.local
@@ -209,11 +221,11 @@ when you want updates to arrive with the rest of your system.
 ## Contributing
 
 Building the wheels and bumping a Neovim release are described in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+[`CONTRIBUTING.md`](https://github.com/nickeisenberg/fast-nvim-release/blob/master/CONTRIBUTING.md).
 
 ## License
 
 fast-nvim-release is MIT licensed. The vendored Neovim binaries and runtime are
 distributed under Neovim's license (Apache-2.0, plus the Vim license for parts
-of the runtime); see `THIRD_PARTY_NOTICES.md` and the
+of the runtime); see [`THIRD_PARTY_NOTICES.md`](https://github.com/nickeisenberg/fast-nvim-release/blob/master/THIRD_PARTY_NOTICES.md) and the
 `fast_nvim_release/_nvim/LICENSE.nvim-<release>.txt` files inside the wheel.
