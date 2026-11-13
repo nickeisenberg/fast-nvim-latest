@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-MAX_LINES = 20
+MAX_LINES = 8  # keep room for every log in the annotation stream
 MAX_CHARS = 900
 INTERESTING = ("FAILED", "ERROR", "Error:", "assert", "Exception", "Traceback")
 
@@ -46,7 +46,8 @@ def annotate(path: Path) -> int:
         print(f"::warning::{path} is empty, nothing to report")
         return 0
     for line in picked:
-        print("::error::" + line.replace("\r", " ")[:MAX_CHARS])
+        text = line.replace("\r", " ")
+        print(f"::error::[{path.name}] " + text[:MAX_CHARS])
     return len(picked)
 
 
