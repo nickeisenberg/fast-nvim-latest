@@ -527,6 +527,25 @@ def test_ci_never_publishes_anything():
     assert "build_wheels.py --all" not in ci
 
 
+def test_a_release_is_only_published_after_the_suite_and_a_smoke_test():
+    """ci.yml does not run for a tag, so the release build must gate itself."""
+    build = _workflow("release.yml").split("publish-testpypi:", 1)[0]
+    assert "python -m pytest" in build
+    assert "scripts/smoke_test.py" in build
+    assert "check_wheels.py" in build
+    # and before anything is uploaded, not after
+    assert build.index("python -m pytest") < build.index("check_wheels.py")
+    assert build.index("scripts/smoke_test.py") < build.index("upload-artifact")
+
+
+def test_the_lint_and_test_tools_are_pinned():
+    """An unpinned ruff turns green CI red without a code change."""
+    for name in ("ci.yml", "release.yml"):
+        for line in _workflow(name).splitlines():
+            if "pip install" in line and (" ruff" in line or "pytest" in line):
+                assert "==" in line, (name, line.strip())
+
+
 def test_a_release_is_never_cancelled_by_concurrency():
     assert "cancel-in-progress: false" in _workflow("release.yml")
 
