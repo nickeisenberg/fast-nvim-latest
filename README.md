@@ -34,9 +34,13 @@ Every release line is pinned to its newest patch release:
 
 | Release | Neovim | Linux | macOS | Windows x64 | Windows arm64 |
 | --- | --- | --- | --- | --- | --- |
-| `0.10` | 0.10.4 | ✓ | ✓ | ✓ | — (Neovim had no arm64 build) |
+| `0.10` | 0.10.4 | ✓ * | ✓ | ✓ | — (Neovim had no arm64 build) |
 | `0.11` | 0.11.7 | ✓ | ✓ | ✓ | ✓ |
 | `0.12` | 0.12.6 | ✓ | ✓ | ✓ | ✓ |
+
+\* on Linux arm64 the 0.10 build needs glibc 2.38; on older systems (Ubuntu
+22.04, Debian 12, RHEL 9) `setup 0.10` refuses instead of installing a binary
+that cannot start. Use 0.11 or 0.12 there.
 
 `0.12` is the default. Pick any of them when installing:
 
@@ -64,6 +68,10 @@ need only 2.34. Vendoring it would force the whole arm64 wheel up to
 `manylinux_2_38` and silently drop Ubuntu 22.04, Debian 12 and RHEL 9 — so that
 one build is served on demand instead. Every other build ships in the wheel.
 
+Because of that floor, `setup 0.10` checks this machine's glibc on Linux arm64
+and refuses before downloading anything when it is older than 2.38. Say
+`fast-nvim-release setup 0.11` (or `0.12`) on those systems.
+
 ## Which build you get
 
 pip picks the wheel from the **running interpreter's** platform tag, and
@@ -73,7 +81,7 @@ never disagree:
 | Your machine | Python | Wheel / builds you get |
 | --- | --- | --- |
 | Linux x86_64 (glibc ≥ 2.34) | any | `manylinux_2_34_x86_64` |
-| Linux arm64 | any | `manylinux_2_34_aarch64` (0.10 fetched on demand) |
+| Linux arm64 | any | `manylinux_2_34_aarch64` (0.10 fetched on demand, needs glibc 2.38) |
 | Apple silicon | native arm64 | `macosx_11_0_arm64` |
 | Apple silicon | x86_64 (Rosetta 2, Intel Homebrew/conda) | `macosx_11_0_x86_64` — works, slower, **`setup` warns** |
 | Intel Mac | any | `macosx_11_0_x86_64` |

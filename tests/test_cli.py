@@ -61,6 +61,27 @@ def test_setup_installs_a_named_older_release(fake_bundle, prefix, capsys):
     assert bundle.installed_releases(prefix) == [OLDEST]
 
 
+def test_setup_refuses_a_build_this_glibc_cannot_run(fake_bundle, prefix, capsys, monkeypatch):
+    """0.10 on arm64 needs glibc 2.38: never download it on a 2.35 system."""
+    from fast_nvim_release import platforms
+
+    monkeypatch.setattr(platforms, "host_platform", lambda: platforms.PLATFORMS["linux-arm64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: (2, 35))
+
+    def must_not_fetch(target):
+        pytest.fail(f"would have fetched {target.label}")
+
+    monkeypatch.setattr(bundle, "needs_download", must_not_fetch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["setup", OLDEST, "linux-arm64", "--prefix", str(prefix), "--quiet"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "glibc 2.38" in err and "2.35" in err
+    assert f"setup {NEWEST}" in err
+    assert not (prefix / "bin").exists()
+
+
 @POSIX_ONLY
 def test_switching_releases_in_one_prefix(fake_bundle, prefix, capsys):
     assert main(["setup", NEWEST, "--prefix", str(prefix), "--quiet"]) == 0

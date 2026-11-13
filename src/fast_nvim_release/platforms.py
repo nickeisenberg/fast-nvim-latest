@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 #: Every supported release line, oldest first; each is pinned to its newest
@@ -143,6 +144,8 @@ class Release:
     missing: Tuple[str, ...] = ()
     #: platforms that exist but are deliberately not vendored (see module doc)
     downloaded_not_bundled: Tuple[str, ...] = ()
+    #: platform key -> the glibc the official build needs, where we know it
+    glibc_floors: Dict[str, Tuple[int, int]] = field(default_factory=dict)
 
     @property
     def display(self) -> str:
@@ -172,6 +175,9 @@ class Release:
         if platform_key in self.missing:
             return f"Neovim {self.version} has no {platform_key} build"
         if platform_key in self.downloaded_not_bundled:
+            floor = self.glibc_floors.get(platform_key)
+            if floor:
+                return "not bundled (needs glibc {}.{}); fetched on first use".format(*floor)
             return "not bundled (glibc floor); fetched on first use"
         return None
 
@@ -216,6 +222,11 @@ class Target:
     @property
     def wheel_tag(self) -> str:
         return self.platform.wheel_tag
+
+    @property
+    def min_glibc(self) -> Optional[Tuple[int, int]]:
+        """The glibc this build needs, when we know it (``None`` = unknown)."""
+        return self.release.glibc_floors.get(self.platform.key)
 
     @property
     def release_key(self) -> str:
@@ -271,8 +282,10 @@ RELEASES: Dict[str, Release] = {
         # The 0.10 arm64 binary needs glibc 2.38 while 0.11/0.12 need only
         # 2.34.  Vendoring it would push the whole arm64 wheel to
         # manylinux_2_38 and silently drop Ubuntu 22.04 / Debian 12 / RHEL 9,
-        # so 0.10 on arm64 is fetched on demand instead.
+        # so 0.10 on arm64 is fetched on demand instead -- and refused on the
+        # systems it cannot run on (see glibc_problem).
         downloaded_not_bundled=("linux-arm64",),
+        glibc_floors={"linux-arm64": (2, 38)},
     ),
     "0.11": Release(
         key="0.11",
@@ -494,6 +507,70 @@ def is_cross(target: Target) -> bool:
     """True if ``target`` is for another platform than the one we run on."""
     here = host_platform()
     return here is None or target.key != here.key
+
+
+# --------------------------------------------------------------------------
+# glibc, for the builds that are fetched on demand
+# --------------------------------------------------------------------------
+_GLIBC_VERSION = re.compile(r"(\d+)\.(\d+)")
+
+
+def host_glibc() -> Optional[Tuple[int, int]]:
+    """The glibc this system provides, if it is a glibc system we can ask."""
+    if _host_family() != "linux":
+        return None
+    try:
+        reported = os.confstr("CS_GNU_LIBC_VERSION")  # e.g. "glibc 2.34"
+    except (AttributeError, OSError, ValueError):  # pragma: no cover - musl, odd libc
+        return None
+    match = _GLIBC_VERSION.search(reported or "")
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _fits_glibc(target: Optional[Target], have: Tuple[int, int]) -> bool:
+    if target is None:
+        return False
+    floor = target.min_glibc
+    return floor is None or floor <= have
+
+
+def glibc_problem(target: Target) -> Optional[str]:
+    """Why ``target`` cannot run on this machine, or ``None`` if it can.
+
+    Only the build for *this* platform is checked: another platform's binary
+    is installed for another machine, whose glibc we cannot see.  Unknown
+    floors or an unreadable glibc are not treated as a problem -- guessing
+    would refuse installs that work.
+    """
+    floor = target.min_glibc
+    if floor is None:
+        return None
+    here = host_platform()
+    if here is None or here.key != target.key:
+        return None
+    have = host_glibc()
+    if have is None or have >= floor:
+        return None
+    return (
+        "Neovim {release} for {platform} needs glibc {need}, but this system has "
+        "{have}.\n  that build cannot start here; use a newer release line, e.g.\n"
+        "  fast-nvim-release setup {other}".format(
+            release=target.release.display,
+            platform=target.key,
+            need="{}.{}".format(*floor),
+            have="{}.{}".format(*have),
+            other=next(
+                (
+                    key
+                    for key in reversed(RELEASE_KEYS)
+                    if _fits_glibc(RELEASES[key].target(here.key), have)
+                ),
+                DEFAULT_RELEASE,
+            ),
+        )
+    )
 
 
 # --------------------------------------------------------------------------
