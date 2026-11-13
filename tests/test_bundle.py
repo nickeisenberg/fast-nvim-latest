@@ -275,6 +275,23 @@ def test_human_size():
     assert bundle.human_size(34 * 1024 * 1024).endswith("MiB")
 
 
+def test_extraction_keeps_exactly_the_bundle_parts():
+    """The archive filter must follow BUNDLE_PARTS, not a second copy of it."""
+    for part, _destination in bundle.BUNDLE_PARTS:
+        assert bundle._keep(part)
+        assert bundle._keep(f"{part}/something")
+    assert not bundle._keep("doc")
+    assert not bundle._keep("binoculars")
+
+
+def test_one_place_decides_where_a_build_comes_from(fake_bundle, host_key):
+    target = RELEASES["0.12"].target(host_key)
+    kind, where = bundle.origin(target)
+    assert kind == "pip wheel"
+    assert where == bundle.bundle_path("0.12", host_key)
+    assert bundle.needs_download(target) is False
+
+
 def test_bundle_parts_cover_binary_and_runtime():
     parts = {part for part, _ in bundle.BUNDLE_PARTS}
     assert parts == {"bin", "lib/nvim", "share/nvim/runtime"}
