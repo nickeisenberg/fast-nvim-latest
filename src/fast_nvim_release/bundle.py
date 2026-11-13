@@ -965,26 +965,37 @@ def install(
 
 
 def _run(exe: Path, args: List[str], timeout: float) -> subprocess.CompletedProcess:
+    """Run ``exe`` with the two streams kept apart.
+
+    Neovim can write warnings to stderr on a perfectly good start-up, and
+    callers parse stdout (``--version``'s first line, the ``$VIMRUNTIME`` we
+    asked for), so merging the streams would corrupt the answer.
+    """
     try:
         return subprocess.run(
             [str(exe), *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            capture_output=True,
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise FastNvimError(f"could not run {exe}: {exc}") from exc
 
 
+def _output(result: subprocess.CompletedProcess) -> str:
+    """Everything the process printed, for an error message."""
+    parts = [
+        stream.decode("utf-8", "replace").strip()
+        for stream in (result.stdout, result.stderr)
+        if stream
+    ]
+    return "\n".join(part for part in parts if part)
+
+
 def neovim_version(exe: Path, timeout: float = 60.0) -> str:
     """Ask the binary itself what version it is."""
     result = _run(exe, ["--version"], timeout)
     if result.returncode != 0:
-        raise FastNvimError(
-            "{} --version exited with {}\n{}".format(
-                exe, result.returncode, result.stdout.decode("utf-8", "replace")
-            )
-        )
+        raise FastNvimError(f"{exe} --version exited with {result.returncode}\n{_output(result)}")
     first = result.stdout.decode("utf-8", "replace").splitlines() or [""]
     return first[0].strip()
 
@@ -1009,7 +1020,7 @@ def runtime_path(exe: Path, timeout: float = 60.0) -> str:
     result = _run(exe, list(PROBE_ARGS), timeout)
     output = result.stdout.decode("utf-8", "replace").strip()
     if result.returncode != 0:
-        raise FastNvimError(f"{exe} could not start (exit {result.returncode}):\n{output}")
+        raise FastNvimError(f"{exe} could not start (exit {result.returncode}):\n{_output(result)}")
     return output
 
 

@@ -726,6 +726,45 @@ def test_runtime_path_uses_the_safe_probe(fake_bundle, host_key, monkeypatch):
     assert reported.endswith("share/nvim/runtime")
 
 
+@POSIX_ONLY
+def test_a_warning_on_stderr_does_not_corrupt_the_version_or_runtime(tmp_path):
+    """Neovim can be chatty on stderr; only stdout is the answer."""
+    truthful = tmp_path / "noisy"
+    truthful.write_text(
+        "#!/bin/sh\n"
+        'case " $* " in\n'
+        '  *" --version "*) echo "NVIM v0.12.6"; echo "warning: chatter" >&2; exit 0 ;;\n'
+        '  *) printf "%s" "/opt/nvim/runtime"; echo "warning: chatter" >&2; exit 0 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    truthful.chmod(0o755)
+    full = bundle._run(truthful, ["--version"], 30)
+    assert full.stdout.decode().strip() == "NVIM v0.12.6"
+    assert "chatter" in full.stderr.decode()
+    assert bundle.neovim_version(truthful) == "NVIM v0.12.6"
+    assert bundle.runtime_path(truthful) == "/opt/nvim/runtime"
+
+
+@POSIX_ONLY
+def test_a_failing_binary_reports_both_streams(tmp_path):
+    broken = tmp_path / "broken"
+    broken.write_text(
+        "#!/bin/sh\necho starting >&2\necho 'E5108: boom'\nexit 3\n",
+        encoding="utf-8",
+    )
+    broken.chmod(0o755)
+    with pytest.raises(bundle.FastNvimError) as excinfo:
+        bundle.runtime_path(broken)
+    message = str(excinfo.value)
+    assert "exit 3" in message
+    assert "E5108: boom" in message and "starting" in message
+
+    with pytest.raises(bundle.FastNvimError) as excinfo:
+        bundle.neovim_version(broken)
+    assert "exited with 3" in str(excinfo.value)
+
+
 # --------------------------------------------------------------------------
 # misc
 # --------------------------------------------------------------------------
