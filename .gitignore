@@ -1,0 +1,23 @@
+# vendored Neovim builds (created by scripts/fetch_nvim.py)
+src/fast_nvim/_nvim/*
+!src/fast_nvim/_nvim/.gitkeep
+
+# build artifacts
+build/
+dist/
+wheelhouse/
+*.egg-info/
+src/*.egg-info/
+.eggs/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# keep the package marker so the tree exists before vendoring
+!src/fast_nvim/_nvim/.gitkeep
