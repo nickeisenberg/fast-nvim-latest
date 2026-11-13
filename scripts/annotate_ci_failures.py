@@ -16,7 +16,7 @@ from typing import List, Optional
 
 MAX_LINES = 8  # keep room for every log in the annotation stream
 MAX_CHARS = 900
-INTERESTING = ("FAILED", "ERROR", "Error:", "assert", "Exception", "Traceback")
+INTERESTING = ("FAILED", "ERROR", "Error:", "assert", "Exception", "Traceback", "- ")
 
 
 def interesting_lines(text: str) -> List[str]:
@@ -26,13 +26,19 @@ def interesting_lines(text: str) -> List[str]:
     diagnosable, so the tail of the log is the last resort.
     """
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
-    picked = [line for line in lines if line.startswith(INTERESTING)]
+    picked = [
+        line for line in lines if line.startswith(INTERESTING) or line.lstrip().startswith("- ")
+    ]
     for line in lines:
         if len(picked) >= MAX_LINES:
             break
         if line not in picked and any(word in line for word in INTERESTING):
             picked.append(line)
-    return picked[:MAX_LINES] or lines[-MAX_LINES:]
+    if picked:
+        return picked[:MAX_LINES]
+    if "passed" in text and "FAILED" not in text and "failed" not in text:
+        return []  # the command succeeded; nothing to report
+    return lines[-MAX_LINES:]
 
 
 def annotate(path: Path) -> int:
@@ -43,7 +49,6 @@ def annotate(path: Path) -> int:
         return 0
     picked = interesting_lines(text)
     if not picked:
-        print(f"::warning::{path} is empty, nothing to report")
         return 0
     for line in picked:
         text = line.replace("\r", " ")

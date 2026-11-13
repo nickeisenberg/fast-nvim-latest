@@ -451,12 +451,27 @@ def test_ci_annotations_fall_back_to_the_tail_of_the_log(tmp_path, capsys):
     assert "::error::[validate.log] exit 1" in out
 
 
-def test_an_empty_log_reports_nothing_but_warns(tmp_path, capsys):
+def test_a_passing_log_produces_no_annotations(tmp_path, capsys):
     import annotate_ci_failures
 
-    log = tmp_path / "empty.log"
-    log.write_text("", encoding="utf-8")
+    log = tmp_path / "pytest.log"
+    log.write_text("140 passed, 24 skipped in 3.5s\n", encoding="utf-8")
     assert annotate_ci_failures.main([str(log)]) == 0
-    out = capsys.readouterr().out
-    assert "::error::" not in out
-    assert "::warning::" in out
+    assert "::error::" not in capsys.readouterr().out
+
+
+def test_a_windows_wheel_needs_no_posix_exec_bit(tmp_path):
+    """zipfile on Windows records no 0o111, so demanding one was a false alarm."""
+    path = fake_wheel(tmp_path, target=TARGETS["windows-x86_64"])
+    # rewrite the exe entry the way a Windows build would store it
+    import shutil
+
+    rebuilt = tmp_path / path.name
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(str(rebuilt) + ".new", "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename.endswith("/bin/nvim.exe"):
+                item.external_attr = 0o666 << 16
+            dst.writestr(item, data)
+    shutil.move(str(rebuilt) + ".new", path)
+    assert check_wheels.check(path) == []

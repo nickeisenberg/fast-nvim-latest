@@ -190,7 +190,9 @@ def _check_contents(path: Path, tag: str, target) -> List[str]:
         else:
             info = wheel.getinfo(exe)
             mode = info.external_attr >> 16
-            if mode and not mode & 0o111:
+            # only POSIX wheels can record an executable bit; a wheel built on
+            # Windows has none, and pip's shim does not need one there
+            if target.family != "windows" and mode and not mode & 0o111:
                 problems.append(f"{exe} is not executable in the archive")
             binary = wheel.read(exe)
 
