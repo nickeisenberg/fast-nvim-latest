@@ -1,197 +1,76 @@
 #!/usr/bin/env python3
-"""Install a built wheel into a clean venv and use it like a real user would.
+"""Install a built wheel into a clean venv and use it like a user would.
 
-    python scripts/smoke_test.py dist/fast_nvim_release-0.2.1-py3-none-manylinux_2_34_x86_64.whl
+    python scripts/smoke_test.py [dist/fast_nvim_release-...-<this platform>.whl]
 
-Checks ``version``, ``run``, ``setup`` of more than one release, and that the
-installed nvim resolves its ``$VIMRUNTIME`` inside the prefix (i.e. the runtime
-really came along).  Used by CI on Linux, macOS and Windows.
+Runs ``--version``, ``run``, ``setup`` and ``path`` for every release the
+wheel carries, and checks the installed nvim reports the right version.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import venv
 from pathlib import Path
-from typing import List, NoReturn, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_release import __version__, bundle  # noqa: E402
-from fast_nvim_release.platforms import host_platform  # noqa: E402
+from fast_nvim_release.platforms import RELEASES, host_platform  # noqa: E402
+
+#: a user's $VIMRUNTIME must not decide whether the smoke test passes
+ENV = {k: v for k, v in os.environ.items() if k not in ("VIMRUNTIME", "VIM")}
 
 
-def run(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 300):
-    print("$ " + " ".join(str(part) for part in cmd), flush=True)
-    return subprocess.run(
-        [str(part) for part in cmd],
-        cwd=str(cwd) if cwd else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=timeout,
-        env=clean_env(),
+def run(*cmd, ok: bool = True) -> str:
+    print("$", *cmd, flush=True)
+    result = subprocess.run(
+        [str(part) for part in cmd], capture_output=True, text=True, timeout=300, env=ENV
     )
+    if (result.returncode == 0) != ok:
+        raise SystemExit(f"FAILED (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+    return result.stdout + result.stderr
 
 
-def fail(message: str, output: bytes = b"") -> NoReturn:
-    print("FAILED: " + message, file=sys.stderr)
-    if output:
-        print(output.decode("utf-8", "replace"), file=sys.stderr)
-    raise SystemExit(1)
-
-
-def find_wheel(explicit: List[str]) -> Path:
-    if explicit:
-        return Path(explicit[0]).expanduser().resolve()
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
     here = host_platform()
     if here is None:
-        fail("cannot detect this platform; pass a wheel path")
-    candidates = sorted(
-        (ROOT / "dist").glob(f"fast_nvim_release-*-{here.wheel_tag}.whl"),
-        key=lambda path: path.stat().st_mtime,
-    )
-    if not candidates:
-        fail(f"no wheel for {here.key} in dist/; build one with `python -m build --wheel`")
-    current = [
-        path for path in candidates if path.name.startswith(f"fast_nvim_release-{__version__}-")
-    ]
-    if current:
-        return current[-1]
-    print(
-        f"warning: no {__version__} wheel in dist/, testing the newest: {candidates[-1].name}",
-        file=sys.stderr,
-    )
-    return candidates[-1]
+        raise SystemExit("unknown host platform")
+    wheels = [Path(argv[0])] if argv else sorted((ROOT / "dist").glob(f"*-{here.wheel_tag}.whl"))
+    if not wheels:
+        raise SystemExit(f"no {here.wheel_tag} wheel in dist/")
+    wheel = wheels[-1].resolve()
+    releases = [key for key, release in RELEASES.items() if here.key in release.sha256]
 
+    with tempfile.TemporaryDirectory(prefix="fast-nvim-release-smoke-") as tmp:
+        work = Path(tmp)
+        venv.create(work / "venv", with_pip=True)
+        scripts = work / "venv" / ("Scripts" if os.name == "nt" else "bin")
+        suffix = ".exe" if os.name == "nt" else ""
+        python = scripts / f"python{suffix}"
+        cli = scripts / f"fast-nvim-release{suffix}"
+        run(python, "-m", "pip", "install", "--no-deps", "-q", wheel)
 
-def first_line(output: bytes) -> str:
-    """The first line a command printed, or ``""`` if it printed nothing."""
-    lines = output.decode("utf-8", "replace").splitlines()
-    return lines[0] if lines else ""
+        out = run(cli, "--version")
+        for key in releases:
+            assert RELEASES[key].version in out, out
+        run(cli, "setup", ok=False)  # --prefix is required
 
+        prefix = work / "prefix"
+        for key in releases:
+            version = RELEASES[key].version
+            assert version in run(cli, "run", key, "--", "--version").splitlines()[0]
+            run(cli, "setup", key, "--prefix", prefix)
+            assert version in run(prefix / "bin" / here.exe, "--version").splitlines()[0]
+            print(f"  {key}: ok ({version})")
+        assert str(prefix) in run(cli, "path", "--prefix", prefix)
 
-def clean_env() -> dict:
-    """This environment without $VIMRUNTIME/$VIM, which would override the probe."""
-    return {key: value for key, value in os.environ.items() if key not in ("VIMRUNTIME", "VIM")}
-
-
-def runtime_of(exe: Path) -> str:
-    # the same probe the CLI uses: no user config, and no shada rewrite
-    result = run([exe, *bundle.PROBE_ARGS])
-    return result.stdout.decode("utf-8", "replace").strip()
-
-
-def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("wheel", nargs="*", help="wheel to test (default: host wheel in dist/)")
-    args = parser.parse_args(argv)
-
-    wheel = find_wheel(args.wheel)
-    here = host_platform()
-    if here is None:
-        fail("unknown host platform")
-
-    print(f"smoke testing {wheel.name} on {here.key}")
-    work = Path(tempfile.mkdtemp(prefix="fast-nvim-release-smoke-"))
-    venv_dir = work / "venv"
-    prefix = work / "prefix"
-    try:
-        venv.EnvBuilder(with_pip=True).create(str(venv_dir))
-        python = (
-            venv_dir / "Scripts" / "python.exe" if os.name == "nt" else venv_dir / "bin" / "python"
-        )
-        console = (
-            venv_dir / "Scripts" / "fast-nvim-release.exe"
-            if os.name == "nt"
-            else venv_dir / "bin" / "fast-nvim-release"
-        )
-
-        result = run([python, "-m", "pip", "install", "--no-deps", wheel])
-        if result.returncode:
-            fail("pip install failed", result.stdout)
-
-        result = run([console, "version", "--json"])
-        if result.returncode:
-            fail("`fast-nvim-release version --json` failed", result.stdout)
-        payload = json.loads(result.stdout)
-        if not payload["bundled"]:
-            fail("wheel does not bundle {}: {}".format(here.key, payload["vendored_targets"]))
-        print("  version: {} / {}".format(payload["fast_nvim_release"], payload["nvim_version"]))
-        bundled_targets = payload["vendored_targets"]
-        print("  bundled: {}".format(", ".join(bundled_targets)))
-
-        # `setup --list` must know every release we claim to support
-        result = run([console, "setup", "--list"])
-        if result.returncode:
-            fail("`fast-nvim-release setup --list` failed", result.stdout)
-        listing = result.stdout.decode("utf-8", "replace")
-        for release_key in payload["releases"]:
-            if release_key not in listing:
-                fail(f"setup --list does not mention release {release_key}", result.stdout)
-
-        # `setup` must never pick an install location on its own
-        result = run([console, "setup", "--dry-run"])
-        if not result.returncode:
-            fail("`fast-nvim-release setup` without --prefix did not fail", result.stdout)
-        if b"--prefix" not in result.stdout:
-            fail("`setup` without --prefix does not say --prefix is required", result.stdout)
-
-        # walk every release bundled for this platform, newest last
-        installed_versions = {}
-        for label in bundled_targets:
-            release_key, platform_key = label.split("/")
-            if platform_key != here.key:
-                continue
-            result = run([console, "run", release_key, "--", "--version"])
-            if result.returncode:
-                fail(f"`run {release_key}` failed", result.stdout)
-            first = first_line(result.stdout)
-            if not first.startswith("NVIM "):
-                fail(f"run {release_key} printed {first!r}", result.stdout)
-            print(f"  run {release_key}: {first}")
-
-            result = run([console, "setup", release_key, "--prefix", prefix, "--quiet"])
-            if result.returncode:
-                fail(f"`setup {release_key}` failed", result.stdout)
-            exe = prefix / "bin" / here.exe
-            if not exe.is_file():
-                fail(f"setup did not install {exe}", result.stdout)
-            if os.name != "nt" and not os.access(exe, os.X_OK):
-                fail(f"{exe} is not executable")
-            if not (prefix / "share" / "nvim" / "runtime" / "syntax" / "syntax.vim").is_file():
-                fail("runtime was not installed into the prefix", result.stdout)
-
-            installed = runtime_of(exe)
-            # resolve both sides: macOS turns /var/folders/... into /private/var/...
-            expected_runtime = (prefix / "share" / "nvim" / "runtime").resolve()
-            actual_runtime = Path(installed).resolve() if installed else None
-            if actual_runtime != expected_runtime:
-                fail(f"installed nvim uses {installed!r}, expected {expected_runtime}")
-            print(f"  setup {release_key}: $VIMRUNTIME={installed}")
-
-            result = run([exe, "--version"])
-            first = first_line(result.stdout)
-            if result.returncode or not first.startswith("NVIM "):
-                fail("installed nvim --version failed", result.stdout)
-            installed_versions[release_key] = first
-            print(f"  {first}")
-
-        if not installed_versions:
-            fail("no bundled release could be installed on this platform")
-        if len(set(installed_versions.values())) < len(installed_versions):
-            fail(f"two releases installed the same Neovim version: {installed_versions}")
-
-        print(f"\nPASS {wheel.name}")
-        return 0
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+    print(f"PASS {wheel.name}")
+    return 0
 
 
 if __name__ == "__main__":

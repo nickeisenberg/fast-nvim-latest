@@ -55,10 +55,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-ci.txt
       - name: unit tests (no network, fake binary)
-        shell: bash
-        run: |
-          set -o pipefail
-          python -m pytest -q 2>&1 | tee pytest.log
+        run: python -m pytest -q
       - name: restore the Neovim archive cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -70,15 +67,6 @@ jobs:
         run: python -m build --wheel --outdir dist
       - name: validate the wheel
         shell: bash
-        run: |
-          set -o pipefail
-          { python -m twine check dist/*; python scripts/check_wheels.py; } 2>&1 | tee validate.log
+        run: python -m twine check dist/* && python scripts/check_wheels.py
       - name: install it and use it
-        shell: bash
-        run: |
-          set -o pipefail
-          python scripts/smoke_test.py 2>&1 | tee smoke.log
-      - name: surface failures as annotations
-        if: failure()
-        shell: bash
-        run: python scripts/annotate_ci_failures.py pytest.log validate.log smoke.log
+        run: python scripts/smoke_test.py

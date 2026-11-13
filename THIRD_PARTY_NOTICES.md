@@ -6,8 +6,7 @@ This package redistributes unmodified builds of
 [Neovim](https://github.com/neovim/neovim) from its official GitHub releases.
 
 The release lines shipped are pinned in `src/fast_nvim_release/platforms.py`
-(`RELEASES`) and recorded in `fast_nvim_release/_nvim/BUILD_INFO.json` inside
-the wheel. Each release line is pinned to one patch release:
+(`RELEASES`). Each release line is pinned to one patch release:
 
 | Release | Neovim version |
 | --- | --- |
@@ -22,8 +21,7 @@ the wheel. Each release line is pinned to one patch release:
   release's tag by `scripts/fetch_nvim.py`), and the Vim license is also present
   in the runtime as `share/nvim/runtime/doc/uganda.txt`.
 * Each vendored build is extracted from the release archive whose sha256 is
-  pinned in `platforms.py`; the same checksum is recorded in that build's
-  `BUILD_INFO.json`.
+  pinned in `platforms.py`.
 
 ## Bundled third-party components
 

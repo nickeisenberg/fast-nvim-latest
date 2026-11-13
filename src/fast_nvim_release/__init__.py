@@ -1,8 +1,8 @@
 """fast-nvim-release -- ship Neovim releases in a pip wheel.
 
-``pip install fast-nvim-release`` gives you the newest Neovim lines (binary +
-runtime) for the platform the wheel was built for, plus older lines on demand;
-``fast-nvim-release setup`` puts the release you pick on your PATH.
+``pip install fast-nvim-release`` gives you the last three Neovim release lines
+(binary + runtime) for your platform; ``fast-nvim-release setup`` installs the
+one you pick into a prefix.
 """
 
 from __future__ import annotations
