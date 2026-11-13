@@ -753,6 +753,36 @@ def test_downloads_use_a_per_process_partial_file(monkeypatch, tmp_path):
     assert not list(tmp_path.glob("*.part-*"))
 
 
+def test_a_server_that_sends_more_than_the_pinned_size_is_cut_off(tmp_path, monkeypatch):
+    """A runaway response must not fill the cache before the checksum is seen."""
+
+    class Response:
+        def __init__(self):
+            self.headers = {"Content-Length": "4"}
+            self.chunks = [b"1234", b"5678", b"9999"]
+
+        def read(self, size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        bundle.urllib.request,
+        "urlopen",
+        lambda request, timeout=None: Response(),
+    )
+    target = _target(sha256=hashlib.sha256(b"1234").hexdigest(), size=4)
+    with pytest.raises(bundle.FastNvimError) as excinfo:
+        bundle._download(target, tmp_path / "archive.tar.gz")
+    assert "larger than the 4 bytes pinned" in str(excinfo.value)
+    assert not (tmp_path / "archive.tar.gz").exists()
+    assert not list(tmp_path.glob("*.part-*"))
+
+
 def test_an_unpinned_target_is_never_fetched_or_accepted(tmp_path, monkeypatch):
     """An empty checksum must fail closed, not silently disable verification."""
     target = _target(sha256="")
