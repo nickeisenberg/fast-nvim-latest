@@ -552,6 +552,18 @@ def test_extract_accepts_a_symlink_inside_the_tree(tmp_path):
     assert (dest / "share" / "nvim" / "runtime" / "alias").is_symlink()
 
 
+def test_stale_backups_are_cleaned_where_they_actually_are(tmp_path):
+    """Trees live at <root>/<release>/<platform>, so backups sit one level down."""
+    root = tmp_path / "_nvim"
+    (root / "0.10" / "linux-x86_64.old" / "bin").mkdir(parents=True)
+    (root / "0.10" / "linux-x86_64" / "bin").mkdir(parents=True)
+    (root / "old-layout.old").mkdir()
+    bundle.remove_stale_backups(root)
+    assert not (root / "0.10" / "linux-x86_64.old").exists()
+    assert not (root / "old-layout.old").exists()
+    assert (root / "0.10" / "linux-x86_64" / "bin").is_dir()
+
+
 def test_a_broken_archive_does_not_destroy_the_cached_tree(tmp_path):
     good = _tar(tmp_path / "good.tar.gz", {"nvim-linux-x86_64/bin/nvim": (b"#!/bin/sh\n", 0o755)})
     dest = bundle.extract_archive(_target(), good, tmp_path / "out")
