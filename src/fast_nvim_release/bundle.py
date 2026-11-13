@@ -149,9 +149,7 @@ def normalize(path: Union[str, os.PathLike]) -> Path:
 
 
 def cache_root() -> Path:
-    override = os.environ.get("FAST_NVIM_RELEASE_CACHE_DIR") or os.environ.get(
-        "FAST_NVIM_LATEST_CACHE_DIR"  # deprecated, pre-rename name
-    )
+    override = os.environ.get("FAST_NVIM_RELEASE_CACHE_DIR")
     if override:
         return normalize(override)
     xdg = os.environ.get("XDG_CACHE_HOME")
@@ -169,9 +167,7 @@ def cached_tree(target: Target) -> Path:
 
 
 def default_prefix() -> Path:
-    override = os.environ.get("FAST_NVIM_RELEASE_PREFIX") or os.environ.get(
-        "FAST_NVIM_LATEST_PREFIX"  # deprecated, pre-rename name
-    )
+    override = os.environ.get("FAST_NVIM_RELEASE_PREFIX")
     if override:
         return normalize(override)
     if sys.platform in ("win32", "cygwin", "msys"):

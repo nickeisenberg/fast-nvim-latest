@@ -165,7 +165,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
         fail(problem)
     explicit_location = bool(args.prefix) or bool(
         os.environ.get("FAST_NVIM_RELEASE_PREFIX", "").strip()
-        or os.environ.get("FAST_NVIM_LATEST_PREFIX", "").strip()
     )
 
     if cross and not explicit_location:
