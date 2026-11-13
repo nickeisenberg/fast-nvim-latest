@@ -374,3 +374,35 @@ def test_version_output_is_aligned_and_uses_the_real_program_name(capsys):
         assert match, line
         starts.add(match.start(1))
     assert len(starts) == 1, lines  # every value starts in the same column
+
+
+# --------------------------------------------------------------------------
+# CI has to fire at all, and on the right things
+# --------------------------------------------------------------------------
+WORKFLOW = SCRIPTS.parent / ".github" / "workflows" / "wheels.yml"
+
+
+def _workflow() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_the_workflow_triggers_on_the_branch_this_repo_uses():
+    text = _workflow()
+    push = text.split("on:", 1)[1].split("jobs:", 1)[0]
+    branches = push.split("branches:", 1)[1].splitlines()[0]
+    # the repo's default branch is master; a filter naming only `main`
+    # silently stops every push from building anything
+    assert "master" in branches
+
+
+def test_release_tags_are_triggered_and_gated_consistently():
+    text = _workflow()
+    assert 'tags: ["v*"]' in text
+    # the publish job must look for the same tags the trigger matches
+    assert "startsWith(github.ref, 'refs/tags/v')" in text
+    assert '"${GITHUB_REF_NAME#v}"' in text
+
+
+def test_a_release_is_never_cancelled_by_concurrency():
+    text = _workflow()
+    assert "cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}" in text
