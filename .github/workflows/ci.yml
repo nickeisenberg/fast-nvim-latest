@@ -1,0 +1,71 @@
+name: ci
+
+# Fast feedback on every change: lint, plus a real wheel built, validated and
+# smoke-tested on each supported OS/Python. Nothing here publishes anything.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # archives are ~12 MB each and the pin changes rarely; see the cache steps
+  NVIM_CACHE: ~/.cache/fast-nvim-latest
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install ruff
+        run: python -m pip install --upgrade pip ruff
+      - name: ruff check
+        run: python -m ruff check .
+      - name: ruff format
+        run: python -m ruff format --check .
+
+  test:
+    name: test ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install test tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest build twine
+      - name: unit tests (no network, fake binary)
+        run: python -m pytest -q
+      - name: restore the Neovim archive cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NVIM_CACHE }}
+          key: nvim-${{ runner.os }}-${{ hashFiles('src/fast_nvim_latest/platforms.py') }}
+      - name: vendor Neovim for this platform
+        run: python scripts/fetch_nvim.py
+      - name: build the wheel
+        run: python -m build --wheel --outdir dist
+      - name: validate the wheel
+        run: |
+          python -m twine check dist/*
+          python scripts/check_wheels.py
+      - name: install it and use it
+        run: python scripts/smoke_test.py

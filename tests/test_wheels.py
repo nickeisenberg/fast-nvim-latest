@@ -377,32 +377,48 @@ def test_version_output_is_aligned_and_uses_the_real_program_name(capsys):
 
 
 # --------------------------------------------------------------------------
-# CI has to fire at all, and on the right things
+# the workflows have to fire at all, and only publish on purpose
 # --------------------------------------------------------------------------
-WORKFLOW = SCRIPTS.parent / ".github" / "workflows" / "wheels.yml"
+def _workflow(name: str) -> str:
+    return (SCRIPTS.parent / ".github" / "workflows" / name).read_text(encoding="utf-8")
 
 
-def _workflow() -> str:
-    return WORKFLOW.read_text(encoding="utf-8")
+def _triggers(text: str) -> str:
+    return text.split("on:", 1)[1].split("\njobs:", 1)[0]
 
 
-def test_the_workflow_triggers_on_the_branch_this_repo_uses():
-    text = _workflow()
-    push = text.split("on:", 1)[1].split("jobs:", 1)[0]
-    branches = push.split("branches:", 1)[1].splitlines()[0]
-    # the repo's default branch is master; a filter naming only `main`
-    # silently stops every push from building anything
-    assert "master" in branches
+def test_ci_runs_on_the_branch_this_repo_uses():
+    triggers = _triggers(_workflow("ci.yml"))
+    # the default branch is master; a filter naming only `main` silently
+    # stops every push from building anything
+    assert "master" in triggers.split("branches:", 1)[1].splitlines()[0]
+    assert "pull_request" in triggers
 
 
-def test_release_tags_are_triggered_and_gated_consistently():
-    text = _workflow()
-    assert 'tags: ["v*"]' in text
-    # the publish job must look for the same tags the trigger matches
-    assert "startsWith(github.ref, 'refs/tags/v')" in text
-    assert '"${GITHUB_REF_NAME#v}"' in text
+def test_only_a_version_tag_can_trigger_a_real_publish():
+    release = _workflow("release.yml")
+    assert 'tags: ["v*"]' in _triggers(release)
+    # the branch push must not be a release trigger at all
+    assert "branches:" not in _triggers(release)
+    assert "startsWith(github.ref, 'refs/tags/v')" in release
+    assert '"${GITHUB_REF_NAME#v}"' in release
+
+
+def test_ci_never_publishes_anything():
+    ci = _workflow("ci.yml")
+    for forbidden in ("pypi-publish", "id-token", "twine upload", "environment:"):
+        assert forbidden not in ci
+    # and it does not build the six-wheel set; that is the release's job
+    assert "build_wheels.py --all" not in ci
 
 
 def test_a_release_is_never_cancelled_by_concurrency():
-    text = _workflow()
-    assert "cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}" in text
+    assert "cancel-in-progress: false" in _workflow("release.yml")
+
+
+def test_the_rehearsal_runs_the_same_gate_as_the_real_upload():
+    release = _workflow("release.yml")
+    rehearsal = release.split("publish-testpypi:", 1)[1].split("publish-pypi:", 1)[0]
+    assert "check_wheels.py" in rehearsal
+    real = release.split("publish-pypi:", 1)[1]
+    assert "check_wheels.py" in real
