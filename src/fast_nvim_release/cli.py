@@ -186,6 +186,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     info(f"   release {target.release_key} ({target.nvim_version})")
     info(f"   target  {target.platform.human}")
     info(f"   prefix  {prefix}")
+    if cross:
+        _warn_if_replacing_this_machines_build(prefix, target)
     note = emulation_note()
     if note and not cross:
         warn(note)
@@ -266,6 +268,29 @@ def cmd_setup(args: argparse.Namespace) -> int:
         info("")
         info(f"{target.key} was installed for another platform; it cannot be verified here.")
     return 0
+
+
+def _warn_if_replacing_this_machines_build(prefix: Path, target: Target) -> None:
+    """Say so when a cross-platform install takes over the host's prefix.
+
+    ``FAST_NVIM_RELEASE_PREFIX`` (or ``--prefix``) is how a user installs
+    without thinking about the destination, so a cross-platform build aimed at
+    the same prefix silently leaves them without a Neovim for the machine they
+    are sitting at.  The install still happens -- it was asked for -- but not
+    quietly.
+    """
+    here = host_platform()
+    if here is None or target.key == here.key:
+        return
+    losses = [build for build in bundle.installed_targets(prefix) if build.key == here.key]
+    if not losses:
+        return
+    warn(
+        "{} already holds a Neovim for this machine ({}); installing {} replaces it,\n"
+        "  so `nvim` will no longer run here. Use a separate --prefix to keep both.".format(
+            prefix, ", ".join(build.label for build in losses), target.label
+        )
+    )
 
 
 def _on_path(directory: Path) -> bool:
