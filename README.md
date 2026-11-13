@@ -1,6 +1,6 @@
 # fast-nvim-release
 
-Get the last three minor releases of nvim in under 10 seconds. Works on Linux
+Get the last three minor releases of nvim in under 5 seconds. Works on Linux
 (x86_64, arm64), macOS (Intel, Apple silicon) and Windows (x86_64, arm64).
 
 ```console
@@ -8,12 +8,33 @@ $ time bash -c 'python -m venv ~/get-nvim && \
 source ~/get-nvim/bin/activate && \
 pip install -q fast-nvim-release && \
 mkdir -p ~/nvim && \
-fast-nvim-release setup --prefix ~/nvim --quiet && \
+fast-nvim-release setup 0.12 --prefix ~/nvim --quiet && \
 ~/nvim/bin/nvim --version | head -1' >/dev/null 2>/dev/null
 
 real    0m3.944s
 user    0m3.356s
 sys     0m0.443s
+```
+
+## Quickstart
+```console
+$ pip install fast-nvim-release
+$ mkdir ~/nvim
+$ fast-nvim-release setup 0.12 --prefix ~/nvim
+fast-nvim-release 0.2.1 (Neovim v0.12.6)
+   release 0.12 (v0.12.6)
+   target  linux-x86_64 (linux, x86_64)
+   prefix  /home/you/nvim
+   source  pip wheel (/home/you/.venv/lib/python3.12/site-packages/fast_nvim_release/_nvim/0.12/linux-x86_64)
+
+installed 2124 files (34.4 MiB)
+  /home/you/nvim/bin
+  /home/you/nvim/lib/nvim
+  /home/you/nvim/share/nvim/runtime
+
+verified  NVIM v0.12.6
+$ ~/nvim/bin/nvim --version | head -1
+NVIM v0.12.6
 ```
 
 ## Supported releases
