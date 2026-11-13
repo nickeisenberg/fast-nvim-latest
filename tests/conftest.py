@@ -137,4 +137,3 @@ def host_target() -> Target:
 @pytest.fixture()
 def prefix(tmp_path) -> Path:
     return tmp_path / "prefix"
-
