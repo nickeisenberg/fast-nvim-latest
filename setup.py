@@ -64,7 +64,12 @@ def platform_tag() -> str:
 
 
 def vendored_bundles() -> List[Tuple[str, str]]:
-    """``(release, platform)`` pairs that actually have a binary on disk."""
+    """``(release, platform)`` pairs that actually have a binary on disk.
+
+    The test is exactly the one the runtime uses (``bin/<exe>`` exists, and the
+    release is one we ship rather than fetch on demand), so a build cannot
+    advertise a bundle that ``fast-nvim-release setup`` would not find.
+    """
     found: List[Tuple[str, str]] = []
     if not BUNDLE_ROOT.is_dir():
         return found
@@ -73,8 +78,9 @@ def vendored_bundles() -> List[Tuple[str, str]]:
         if not directory.is_dir():
             continue
         for target in RELEASES[release_key].targets:
-            candidate = directory / target.key / "bin"
-            if candidate.is_dir() and any(candidate.glob("nvim*")):
+            if not RELEASES[release_key].bundled(target.key):
+                continue  # a download-only build must never end up in a wheel
+            if (directory / target.key / "bin" / target.exe).is_file():
                 found.append((release_key, target.key))
     return found
 
