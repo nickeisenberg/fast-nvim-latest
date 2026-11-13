@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from fast_nvim_release import bundle
+from fast_nvim_release import bundle, cli
 from fast_nvim_release.cli import main
 from fast_nvim_release.platforms import PLATFORM_KEYS, RELEASE_KEYS, RELEASES
 
@@ -423,6 +423,21 @@ def test_setup_list_says_what_would_have_to_be_downloaded(tmp_path, monkeypatch,
     assert main(["setup", "--list"]) == 0
     out = capsys.readouterr().out
     assert "cached archive" in out
+
+
+def test_setup_list_marks_a_platform_neovim_never_published(fake_bundle, capsys, monkeypatch):
+    """The status comes from the table, not from reading the note's prose."""
+    from fast_nvim_release import platforms
+
+    monkeypatch.setattr(cli, "host_platform", lambda: platforms.PLATFORMS["windows-arm64"])
+    assert main(["setup", "--list"]) == 0
+    out = capsys.readouterr().out
+    lines = {line.split()[0]: line for line in out.splitlines() if line.strip()}
+    assert "unavailable" in lines[OLDEST]  # 0.10 has no Windows-on-ARM build
+    assert "unavailable" not in lines[NEWEST]
+
+    assert cli._release_status(OLDEST, "windows-arm64") == "unavailable"
+    assert cli._release_status(OLDEST, "linux-x86_64") in ("bundled", "download")
 
 
 def test_help_mentions_every_option(capsys):

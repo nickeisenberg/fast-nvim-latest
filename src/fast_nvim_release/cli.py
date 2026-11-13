@@ -299,16 +299,17 @@ def _can_symlink() -> bool:
         return False
 
 
-def _release_status(platform_key: str, target: Target) -> str:
+def _release_status(release_key: str, platform_key: str) -> str:
+    """How ``release_key`` would be obtained for ``platform_key``."""
+    target = RELEASES[release_key].target(platform_key)
+    if target is None:
+        return "unavailable"  # Neovim never published it for that platform
     if bundle.has_bundled(target):
         return "bundled"
     if (bundle.cached_tree(target) / "bin" / target.exe).is_file():
         return "cached"
     if bundle.cached_archive(target).is_file():
         return "cached archive"
-    note = target.release.platform_note(platform_key)
-    if note and "no " in note:
-        return "unavailable"
     return "download"
 
 
@@ -318,8 +319,7 @@ def _list_releases() -> int:
     rows: List[Tuple[str, str, str, str]] = []
     for key in RELEASE_KEYS:
         release = RELEASES[key]
-        on_here = release.target(here_key) if here else None
-        status = _release_status(here_key, on_here) if on_here else "unavailable"
+        status = _release_status(key, here_key)
         if key == DEFAULT_RELEASE:
             status += " (default)"
         bundled = [t.key for t in release.targets if bundle.has_bundled(t)]
