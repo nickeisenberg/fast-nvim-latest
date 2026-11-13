@@ -334,6 +334,37 @@ def wheel_version(path: Path) -> Optional[str]:
     return match.group("version") if match else None
 
 
+def missing_releases(path: Path) -> List[str]:
+    """Release lines this wheel could carry for its tag but does not.
+
+    Not an error: building a wheel with fewer releases is documented and
+    supported, and two of the six platforms genuinely cannot bundle 0.10.  It
+    is still worth saying out loud, because a vendoring slip would otherwise
+    ship a wheel that silently cannot serve a release offline.
+    """
+    match = WHEEL_NAME.match(path.name)
+    if not match:
+        return []
+    platform = BY_TAG.get(match.group("tag"))
+    if platform is None:
+        return []
+    prefix = "fast_nvim_release/_nvim/"
+    try:
+        with zipfile.ZipFile(path) as wheel:
+            carried = {
+                name[len(prefix) :].split("/")[0]
+                for name in wheel.namelist()
+                if name.startswith(prefix) and name.count("/") > 2
+            }
+    except (zipfile.BadZipFile, OSError):
+        return []
+    return [
+        release_key
+        for release_key in RELEASES
+        if RELEASES[release_key].bundled(platform.key) and release_key not in carried
+    ]
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate fast-nvim-release wheels: one platform per wheel, every "
@@ -365,6 +396,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("{:<58} {:>7.1f}MB  {}".format(path.name, size, "OK" if not problems else "FAILED"))
         for problem in problems:
             print(f"      - {problem}")
+        for release_key in missing_releases(path):
+            print(
+                f"      note: {release_key} is not bundled here, so `setup {release_key}` "
+                "would download it"
+            )
         failures += bool(problems)
 
     versions = {wheel_version(Path(name)) for name in wheels} - {None}
