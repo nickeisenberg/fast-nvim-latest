@@ -455,10 +455,6 @@ def get_release(spec: Optional[str] = None) -> Release:
     return RELEASES[parse_release(spec)]
 
 
-def release_versions() -> List[str]:
-    return [RELEASES[key].version for key in RELEASE_KEYS]
-
-
 # --------------------------------------------------------------------------
 # the machine we are on
 # --------------------------------------------------------------------------

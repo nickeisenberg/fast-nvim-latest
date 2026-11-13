@@ -120,41 +120,13 @@ def has_bundled(target: Target) -> bool:
     return _exe_ok(bundle_exe(target.release_key, target.key))
 
 
-def read_build_info() -> Dict[str, object]:
-    """Contents of ``_nvim/BUILD_INFO.json`` (written by scripts/fetch_nvim.py)."""
-    return _read_json(BUNDLE_ROOT / "BUILD_INFO.json")
-
-
-def bundle_build_info(release_key: str) -> Dict[str, object]:
-    """What the wheel records about one release.
-
-    ``scripts/fetch_nvim.py`` writes the per-release summary into the top-level
-    ``_nvim/BUILD_INFO.json`` index; each ``_nvim/<release>/<platform>/`` also
-    has its own record, which is the fallback for hand-assembled trees.
-    """
-    index = read_build_info()
-    releases = index.get("releases")
-    if isinstance(releases, dict) and isinstance(releases.get(release_key), dict):
-        return releases[release_key]  # type: ignore[return-value]
-    for target in RELEASES[release_key].targets:
-        info = _read_json(bundle_path(release_key, target.key) / "BUILD_INFO.json")
-        if info:
-            return info
-    return {}
-
-
-def bundled_nvim_version(release_key: Optional[str] = None) -> Optional[str]:
-    """The Neovim version recorded in the wheel's index (or one release of it)."""
-    if release_key is None:
-        info = read_build_info()
-        version = info.get("nvim_version")
-        return version if isinstance(version, str) else None
-    info = bundle_build_info(release_key)
-    version = info.get("nvim_version")
-    return version if isinstance(version, str) else None
-
-
 def _read_json(path: Path) -> Dict[str, object]:
+    """A JSON object from ``path``, or ``{}`` if it is missing or malformed.
+
+    The wheels carry a ``BUILD_INFO.json`` per build (provenance for
+    ``scripts/check_wheels.py`` and for anyone reading the wheel), but nothing
+    at runtime depends on it: a hand-assembled tree works without one.
+    """
     try:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
