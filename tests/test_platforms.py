@@ -76,3 +76,24 @@ def test_host_platform(monkeypatch, system, machine, key):
     monkeypatch.setattr(platforms.platform, "machine", lambda: machine)
     found = platforms.host_platform()
     assert (found.key if found else None) == key
+
+
+def test_every_wheel_carries_the_builds_pinned_for_its_platform():
+    from fast_nvim_release.platforms import OLD_GLIBC_RELEASES, WHEELS
+
+    for tag, wheel in WHEELS.items():
+        assert wheel.platform in PLATFORMS
+        assert wheel.releases, tag
+        for release in wheel.releases.values():
+            assert wheel.platform in release.sha256
+    old = WHEELS["manylinux_2_17_x86_64.manylinux2014_x86_64"]
+    assert old.releases == OLD_GLIBC_RELEASES
+    assert {
+        k: r.version
+        for k, r in WHEELS["manylinux_2_17_aarch64.manylinux2014_aarch64"].releases.items()
+    } == {"0.12": "v0.12.5"}
+    for release in OLD_GLIBC_RELEASES.values():
+        assert release.repo == "neovim/neovim-releases"
+        assert release.url("linux-x86_64").startswith(
+            "https://github.com/neovim/neovim-releases/releases/download/"
+        )

@@ -3,7 +3,10 @@
 ## Neovim
 
 This package redistributes unmodified builds of
-[Neovim](https://github.com/neovim/neovim) from its official GitHub releases.
+[Neovim](https://github.com/neovim/neovim) from its official GitHub releases,
+and, in the wheels for older Linux systems, from
+[`neovim/neovim-releases`](https://github.com/neovim/neovim-releases), where the
+Neovim project publishes builds for glibc 2.17.
 
 The release lines shipped are pinned in `src/fast_nvim_release/platforms.py`
 (`RELEASES`). Each release line is pinned to one patch release:

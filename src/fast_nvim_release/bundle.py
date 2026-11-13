@@ -50,6 +50,18 @@ def bundled_releases(platform: Platform) -> List[str]:
     return [key for key in RELEASES if (bundle_dir(key, platform) / "bin" / platform.exe).is_file()]
 
 
+def bundled_version(release_key: str, platform: Platform) -> str:
+    """The Neovim version of a bundled build, e.g. ``v0.12.6``.
+
+    Read from the ``VERSION`` file ``fetch_nvim.py`` writes, because the
+    old-glibc wheels may carry an older patch than :data:`RELEASES` pins.
+    """
+    try:
+        return (bundle_dir(release_key, platform) / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return RELEASES[release_key].version
+
+
 def bundled_exe(release_key: str, platform: Platform) -> Path:
     """The executable of a bundled build, or a :class:`FastNvimError` saying why not."""
     exe = bundle_dir(release_key, platform) / "bin" / platform.exe
@@ -136,7 +148,7 @@ def _write_marker(
     marker.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "release": release_key,
-        "nvim_version": RELEASES[release_key].version,
+        "nvim_version": bundled_version(release_key, platform),
         "platform": platform.key,
         "bin": sorted(bin_names),
     }

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Install a built wheel into a clean venv and use it like a user would.
 
-    python scripts/smoke_test.py [dist/fast_nvim_release-...-<this platform>.whl]
+    python scripts/smoke_test.py [WHEEL]   (default: this machine's main wheel in dist/)
 
 Runs ``--version``, ``run``, ``setup`` and ``path`` for every release the
-wheel carries, and checks the installed nvim reports the right version.
+wheel carries, and checks the installed nvim reports the pinned version.  Any
+wheel this machine can run works, e.g. the old-glibc Linux wheel on a new
+system.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_release.platforms import RELEASES, host_platform  # noqa: E402
+from fast_nvim_release.platforms import WHEELS, host_platform  # noqa: E402
 
 #: a user's $VIMRUNTIME must not decide whether the smoke test passes
 ENV = {k: v for k, v in os.environ.items() if k not in ("VIMRUNTIME", "VIM")}
@@ -44,7 +47,8 @@ def main(argv=None) -> int:
     if not wheels:
         raise SystemExit(f"no {here.wheel_tag} wheel in dist/")
     wheel = wheels[-1].resolve()
-    releases = [key for key, release in RELEASES.items() if here.key in release.sha256]
+    tag = re.sub(r"^.*-py3-none-(.+)\.whl$", r"\1", wheel.name)
+    versions = {key: release.version for key, release in WHEELS[tag].releases.items()}
 
     with tempfile.TemporaryDirectory(prefix="fast-nvim-release-smoke-") as tmp:
         work = Path(tmp)
@@ -56,13 +60,12 @@ def main(argv=None) -> int:
         run(python, "-m", "pip", "install", "--no-deps", "-q", wheel)
 
         out = run(cli, "--version")
-        for key in releases:
-            assert RELEASES[key].version in out, out
+        for version in versions.values():
+            assert version in out, out
         run(cli, "setup", ok=False)  # --prefix is required
 
         prefix = work / "prefix"
-        for key in releases:
-            version = RELEASES[key].version
+        for key, version in versions.items():
             assert version in run(cli, "run", key, "--", "--version").splitlines()[0]
             run(cli, "setup", key, "--prefix", prefix)
             assert version in run(prefix / "bin" / here.exe, "--version").splitlines()[0]

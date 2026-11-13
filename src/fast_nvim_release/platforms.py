@@ -2,8 +2,11 @@
 
 * a **release** is one Neovim minor line pinned to its newest patch
   (``0.12`` -> ``v0.12.6``); users pick it with ``fast-nvim-release setup 0.12``.
-* a **platform** is one official build, e.g. ``linux-x86_64``; each wheel
-  carries the builds for exactly one platform.
+* a **platform** is one official build, e.g. ``linux-x86_64``.
+* a **wheel** carries one platform's builds of every release.  Linux has two
+  wheels per architecture: the official builds (glibc 2.34+) and, for older
+  systems such as RHEL 8, the builds Neovim publishes in ``neovim-releases``
+  (glibc 2.17).  pip installs the newest one the machine can run.
 
 The checksums are only used when building wheels (``scripts/fetch_nvim.py``);
 at runtime the wheel's own contents say what is available.
@@ -34,10 +37,20 @@ class Platform:
 class Release:
     version: str  #: the pinned patch release, e.g. ``v0.12.6``
     sha256: Dict[str, str]  #: platform key -> archive checksum (the builds we ship)
+    repo: str = "neovim/neovim"  #: the GitHub repository publishing these builds
 
     def url(self, platform_key: str) -> str:
         asset = PLATFORMS[platform_key].asset
-        return f"https://github.com/neovim/neovim/releases/download/{self.version}/{asset}"
+        return f"https://github.com/{self.repo}/releases/download/{self.version}/{asset}"
+
+
+@dataclass(frozen=True)
+class Wheel:
+    """One published wheel: its platform tag and the builds it carries."""
+
+    tag: str  #: e.g. ``manylinux_2_34_x86_64``
+    platform: str  #: key into :data:`PLATFORMS` (build directory, archive name)
+    releases: Dict[str, Release]  #: release line -> the pinned build it ships
 
 
 #: ``wheel_tag`` must hold for every release in the wheel: Neovim's official
@@ -93,7 +106,52 @@ RELEASES: Dict[str, Release] = {
     ),
 }
 
+#: Neovim's builds for older Linux systems (``neovim/neovim-releases``): they
+#: need only glibc 2.17, so they run on RHEL/CentOS 7 and 8.  That repository
+#: lags the main one, so a line may be pinned to an older patch here.  Linux
+#: arm64 builds only exist there from 0.12.3 on.
+OLD_GLIBC_RELEASES: Dict[str, Release] = {
+    "0.10": Release(
+        "v0.10.4",
+        # no published checksum (uploaded before GitHub recorded digests and
+        # without a .sha256sum file): pinned from two downloads that matched
+        {"linux-x86_64": "879c0886f47f026d519dcd7e398d7e0f060c944adf791f58539592f0346aa851"},
+        repo="neovim/neovim-releases",
+    ),
+    "0.11": Release(
+        "v0.11.7",
+        {"linux-x86_64": "26606949c3688c2c66bc8c1ba6faaa375edbb48091d3b2cd9c9d8b35fb0a478f"},
+        repo="neovim/neovim-releases",
+    ),
+    "0.12": Release(
+        "v0.12.5",
+        {
+            "linux-x86_64": "9e4a0e9c2aebbcf1eb5f6cdf645b460c9249f517650d0191170f9f152ecfd721",
+            "linux-arm64": "b59063930b3ec62aed6257a4a388d33939c2d8804cce5723836659f7feef876c",
+        },
+        repo="neovim/neovim-releases",
+    ),
+}
+
 DEFAULT_RELEASE: str = list(RELEASES)[-1]
+
+
+def _wheel(tag: str, platform_key: str, table: Dict[str, Release]) -> Wheel:
+    carried = {key: release for key, release in table.items() if platform_key in release.sha256}
+    return Wheel(tag, platform_key, carried)
+
+
+#: Every wheel a release publishes, by platform tag.  The old-glibc tags also
+#: name ``manylinux2014``, so pip versions before 20.3 (RHEL 8's python39
+#: ships 20.2) still recognise them.
+WHEELS: Dict[str, Wheel] = {
+    wheel.tag: wheel
+    for wheel in (
+        *(_wheel(p.wheel_tag, p.key, RELEASES) for p in PLATFORMS.values()),
+        _wheel("manylinux_2_17_x86_64.manylinux2014_x86_64", "linux-x86_64", OLD_GLIBC_RELEASES),
+        _wheel("manylinux_2_17_aarch64.manylinux2014_aarch64", "linux-arm64", OLD_GLIBC_RELEASES),
+    )
+}
 
 
 def parse_release(spec: Optional[str]) -> str:

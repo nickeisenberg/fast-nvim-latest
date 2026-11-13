@@ -13,8 +13,7 @@ import check_wheels
 import fetch_nvim
 import pytest
 
-from fast_nvim_release import platforms
-from fast_nvim_release.platforms import PLATFORMS, RELEASES
+from fast_nvim_release.platforms import OLD_GLIBC_RELEASES, PLATFORMS, RELEASES, WHEELS
 
 LINUX = PLATFORMS["linux-x86_64"]
 
@@ -95,32 +94,44 @@ def test_an_archive_that_does_not_match_its_pin_is_refused(tmp_path, monkeypatch
 
     monkeypatch.setattr(fetch_nvim, "download", evil)
     with pytest.raises(SystemExit, match="checksum mismatch"):
-        fetch_nvim.archive("0.12", LINUX)
+        fetch_nvim.archive(RELEASES["0.12"], LINUX)
     assert not list(tmp_path.rglob("*.tar.gz"))
 
 
 def test_a_verified_cached_archive_is_reused(tmp_path, monkeypatch):
     monkeypatch.setenv("FAST_NVIM_RELEASE_CACHE_DIR", str(tmp_path))
     data = b"archive"
-    pinned = replace(RELEASES["0.12"], sha256={LINUX.key: hashlib.sha256(data).hexdigest()})
-    monkeypatch.setitem(platforms.RELEASES, "0.12", pinned)
-    cached = tmp_path / "v0.12.6" / LINUX.asset
+    digest = hashlib.sha256(data).hexdigest()
+    pinned = replace(RELEASES["0.12"], sha256={LINUX.key: digest})
+    cached = tmp_path / digest[:16] / LINUX.asset
     cached.parent.mkdir()
     cached.write_bytes(data)
     monkeypatch.setattr(fetch_nvim, "download", lambda url, dest: pytest.fail("downloaded"))
-    assert fetch_nvim.archive("0.12", LINUX) == cached
+    assert fetch_nvim.archive(pinned, LINUX) == cached
+
+
+def test_the_two_repositories_never_share_a_cache_entry():
+    """Both publish v0.11.7/nvim-linux-x86_64.tar.gz; the files differ."""
+    main, old = RELEASES["0.11"], OLD_GLIBC_RELEASES["0.11"]
+    assert main.url(LINUX.key) != old.url(LINUX.key)
+    assert main.sha256[LINUX.key][:16] != old.sha256[LINUX.key][:16]
 
 
 # --------------------------------------------------------------------------
 # check_wheels
 # --------------------------------------------------------------------------
-def fake_wheel(tmp_path, platform=LINUX, glibc=b"GLIBC_2.34", runtime=1600, drop=()):
-    path = tmp_path / f"fast_nvim_release-0.3.0-py3-none-{platform.wheel_tag}.whl"
+def fake_wheel(
+    tmp_path, tag="manylinux_2_34_x86_64", glibc=b"GLIBC_2.34", runtime=1600, drop=(), version=None
+):
+    spec = WHEELS[tag]
+    platform = PLATFORMS[spec.platform]
+    path = tmp_path / f"fast_nvim_release-0.3.0-py3-none-{tag}.whl"
     with zipfile.ZipFile(path, "w") as zf:
-        for key, release in RELEASES.items():
-            if platform.key not in release.sha256 or key in drop:
+        for key, release in spec.releases.items():
+            if key in drop:
                 continue
             root = f"fast_nvim_release/_nvim/{key}/{platform.key}/"
+            zf.writestr(f"{root}VERSION", (version or release.version) + "\n")
             exe = zipfile.ZipInfo(f"{root}bin/{platform.exe}")
             exe.external_attr = 0o755 << 16
             zf.writestr(exe, b"\x7fELF " + glibc)
@@ -128,16 +139,22 @@ def fake_wheel(tmp_path, platform=LINUX, glibc=b"GLIBC_2.34", runtime=1600, drop
                 zf.writestr(f"{root}share/nvim/runtime/f{n}.vim", b"")
             zf.writestr(f"fast_nvim_release/_nvim/LICENSE.nvim-{key}.txt", b"Apache")
         info = "fast_nvim_release-0.3.0.dist-info/"
-        tag = f"Tag: py3-none-{platform.wheel_tag}"
-        zf.writestr(info + "WHEEL", f"Root-Is-Purelib: false\n{tag}\n")
+        tags = "".join(f"Tag: py3-none-{part}\n" for part in tag.split("."))
+        zf.writestr(info + "WHEEL", f"Root-Is-Purelib: false\n{tags}")
         zf.writestr(info + "entry_points.txt", "[console_scripts]\n")
     return path
 
 
-def test_a_complete_wheel_passes(tmp_path):
-    assert check_wheels.check(fake_wheel(tmp_path)) == []
-    windows = fake_wheel(tmp_path, platform=PLATFORMS["windows-arm64"], glibc=b"")
-    assert check_wheels.check(windows) == []
+@pytest.mark.parametrize("tag", sorted(WHEELS))
+def test_a_complete_wheel_passes(tmp_path, tag):
+    glibc = b"GLIBC_2.17" if "2_17" in tag else b"GLIBC_2.34"
+    assert check_wheels.check(fake_wheel(tmp_path, tag=tag, glibc=glibc)) == []
+
+
+def test_the_old_glibc_wheel_must_not_need_a_newer_glibc(tmp_path):
+    tag = "manylinux_2_17_x86_64.manylinux2014_x86_64"
+    problems = check_wheels.check(fake_wheel(tmp_path, tag=tag, glibc=b"GLIBC_2.34"))
+    assert any("needs glibc (2, 34)" in item for item in problems), problems
 
 
 @pytest.mark.parametrize(
@@ -146,6 +163,7 @@ def test_a_complete_wheel_passes(tmp_path):
         ({"glibc": b"GLIBC_2.38"}, "needs glibc (2, 38)"),
         ({"runtime": 10}, "only 10 runtime files"),
         ({"drop": ("0.11",)}, "expected 0.10/linux-x86_64"),
+        ({"version": "v0.12.5"}, "the pin is v0.12.6"),
     ],
 )
 def test_a_broken_wheel_fails(tmp_path, kwargs, problem):
@@ -167,18 +185,38 @@ def test_newest_patch_per_line():
     assert check_upstream.newest_patches(tags) == {"0.12": (0, 12, 10), "0.11": (0, 11, 7)}
 
 
-def test_report_flags_stale_pins_and_new_lines(capsys):
-    newest = {"0.10": (0, 10, 4), "0.11": (0, 11, 8), "0.12": (0, 12, 6), "0.13": (0, 13, 0)}
-    stale = check_upstream.report(newest)
-    assert stale == [
-        "0.11: pinned v0.11.7, Neovim publishes v0.11.8",
-        "Neovim has a newer release line: v0.13.0",
+def _versions(pins):
+    return {
+        key: tuple(int(n) for n in release.version[1:].split(".")) for key, release in pins.items()
+    }
+
+
+def test_report_flags_stale_pins(capsys):
+    newest = {**_versions(RELEASES), "0.11": (0, 11, 8)}
+    assert check_upstream.report(newest, RELEASES) == [
+        "0.11: pinned v0.11.7, neovim/neovim publishes v0.11.8"
     ]
 
 
-def test_report_is_quiet_when_everything_is_current(capsys):
-    current = {
-        key: tuple(int(part) for part in release.version[1:].split("."))
-        for key, release in RELEASES.items()
-    }
-    assert check_upstream.report(current) == []
+def test_the_old_glibc_pins_are_checked_against_their_own_repository(capsys):
+    # neovim-releases catching up with 0.12.6 must flag the old-glibc pin
+    newest = {**_versions(OLD_GLIBC_RELEASES), "0.12": (0, 12, 6)}
+    assert check_upstream.report(newest, OLD_GLIBC_RELEASES) == [
+        "0.12: pinned v0.12.5, neovim/neovim-releases publishes v0.12.6"
+    ]
+
+
+@pytest.mark.parametrize("pins", [RELEASES, OLD_GLIBC_RELEASES])
+def test_report_is_quiet_when_everything_is_current(capsys, pins):
+    assert check_upstream.report(_versions(pins), pins) == []
+
+
+def test_a_newer_release_line_is_reported():
+    newest = {**_versions(RELEASES), "0.13": (0, 13, 0)}
+    assert check_upstream.newer_lines(newest) == ["Neovim has a newer release line: v0.13.0"]
+
+
+def test_a_lagging_old_glibc_build_is_a_note_not_a_failure():
+    assert check_upstream.lagging() == [
+        "0.12: the old-glibc wheel ships v0.12.5, the others v0.12.6"
+    ]

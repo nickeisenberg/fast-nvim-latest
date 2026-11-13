@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Download, verify and unpack Neovim builds into the package for a wheel.
+"""Download, verify and unpack the Neovim builds one wheel carries.
 
-    python scripts/fetch_nvim.py                          # this machine's platform
-    python scripts/fetch_nvim.py --platform windows-arm64 # another one (cross-build)
+    python scripts/fetch_nvim.py                    # this machine's main wheel
+    python scripts/fetch_nvim.py --wheel win_arm64  # another one (cross-build)
 
-Every release in ``platforms.RELEASES`` that has a build for the platform is
-unpacked into ``src/fast_nvim_release/_nvim/<release>/<platform>/``.  Archives
-are cached in ``~/.cache/fast-nvim-release`` (``FAST_NVIM_RELEASE_CACHE_DIR``)
-and checked against the pinned sha256 every time they are used.
+Every build listed for the wheel in ``platforms.WHEELS`` is unpacked into
+``src/fast_nvim_release/_nvim/<release>/<platform>/``, with a ``VERSION`` file
+naming the Neovim version.  Archives are cached in ``~/.cache/fast-nvim-release``
+(``FAST_NVIM_RELEASE_CACHE_DIR``) and checked against the pinned sha256 every
+time they are used.
 """
 
 from __future__ import annotations
@@ -29,7 +30,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from fast_nvim_release import __version__  # noqa: E402
 from fast_nvim_release.bundle import PARTS  # noqa: E402
-from fast_nvim_release.platforms import PLATFORMS, RELEASES, Platform, host_platform  # noqa: E402
+from fast_nvim_release.platforms import (  # noqa: E402
+    PLATFORMS,
+    WHEELS,
+    Platform,
+    Release,
+    host_platform,
+)
 
 DEST = ROOT / "src" / "fast_nvim_release" / "_nvim"
 LICENSE_URL = "https://raw.githubusercontent.com/neovim/neovim/{}/LICENSE.txt"
@@ -58,11 +65,11 @@ def download(url: str, dest: Path) -> None:
     os.replace(partial, dest)
 
 
-def archive(release_key: str, platform: Platform) -> Path:
+def archive(release: Release, platform: Platform) -> Path:
     """A cached, checksum-verified release archive."""
-    release = RELEASES[release_key]
     expected = release.sha256[platform.key]
-    path = cache_dir() / release.version / platform.asset
+    # keyed by checksum: both Neovim repositories publish e.g. v0.11.7/nvim-linux-x86_64.tar.gz
+    path = cache_dir() / expected[:16] / platform.asset
     if not path.is_file() or sha256(path) != expected:
         print(f"  downloading {release.url(platform.key)}", flush=True)
         download(release.url(platform.key), path)
@@ -105,23 +112,23 @@ def check_runs(exe: Path, version: str) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--platform", choices=sorted(PLATFORMS), help="default: this machine")
+    parser.add_argument("--wheel", choices=sorted(WHEELS), help="default: this machine's")
     parser.add_argument("--dest", type=Path, default=DEST, help=f"default: {DEST}")
     args = parser.parse_args(argv)
     if not hasattr(tarfile, "data_filter"):
         raise SystemExit("needs tarfile extraction filters (Python 3.12+, or 3.9.17+/3.10.12+)")
 
     here = host_platform()
-    platform = PLATFORMS[args.platform] if args.platform else here
-    if platform is None:
-        raise SystemExit("cannot detect this platform; pass --platform")
+    if args.wheel is None and here is None:
+        raise SystemExit("cannot detect this platform; pass --wheel")
+    wheel = WHEELS[args.wheel or here.wheel_tag]
+    platform = PLATFORMS[wheel.platform]
 
-    for release_key, release in RELEASES.items():
-        if platform.key not in release.sha256:
-            continue
-        print(f"{release_key}/{platform.key} ({release.version})", flush=True)
+    for release_key, release in wheel.releases.items():
+        print(f"{release_key}/{platform.key} ({release.version} from {release.repo})", flush=True)
         tree = args.dest / release_key / platform.key
-        unpack(archive(release_key, platform), platform, tree)
+        unpack(archive(release, platform), platform, tree)
+        (tree / "VERSION").write_text(release.version + "\n", encoding="utf-8")
         if platform == here:
             check_runs(tree / "bin" / platform.exe, release.version)
         license_file = args.dest / f"LICENSE.nvim-{release_key}.txt"

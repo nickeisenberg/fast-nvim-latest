@@ -3,10 +3,10 @@
 
     python scripts/check_wheels.py [--expect-version V] [dist/*.whl]
 
-Each wheel must carry, for exactly its tagged platform, every release pinned
-for that platform: the executable, a complete runtime and Neovim's license.
-On Linux the binaries' glibc requirement must fit the manylinux tag, or pip
-would install a wheel that cannot start.
+Each wheel must carry exactly the builds ``platforms.WHEELS`` lists for its
+tag: the executable, a complete runtime, a ``VERSION`` file naming the pinned
+version, and Neovim's license.  On Linux the binaries' glibc requirement must
+fit the manylinux tag, or pip would install a wheel that cannot start.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import List, Optional, Set, Tuple
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_release.platforms import PLATFORMS, RELEASES  # noqa: E402
+from fast_nvim_release.platforms import PLATFORMS, WHEELS  # noqa: E402
 
 WHEEL_NAME = re.compile(r"^fast_nvim_release-(?P<version>[^-]+)-py3-none-(?P<tag>.+)\.whl$")
 MANYLINUX = re.compile(r"^manylinux_(\d+)_(\d+)_")
@@ -50,12 +50,12 @@ def carried(names: Set[str]) -> Set[Tuple[str, str]]:
 
 def check(path: Path) -> List[str]:
     match = WHEEL_NAME.match(path.name)
-    by_tag = {p.wheel_tag: p for p in PLATFORMS.values()}
-    if not match or match.group("tag") not in by_tag:
+    if not match or match.group("tag") not in WHEELS:
         return [f"unexpected wheel name or platform tag: {path.name}"]
     tag = match.group("tag")
-    platform = by_tag[tag]
-    expected = {key for key, release in RELEASES.items() if platform.key in release.sha256}
+    wheel_spec = WHEELS[tag]
+    platform = PLATFORMS[wheel_spec.platform]
+    expected = set(wheel_spec.releases)
     problems = []
 
     with zipfile.ZipFile(path) as wheel:
@@ -73,6 +73,11 @@ def check(path: Path) -> List[str]:
             runtime = sum(1 for name in names if name.startswith(f"{root}share/nvim/runtime/"))
             if licence not in names:
                 problems.append(f"missing {licence}")
+            version = f"{root}VERSION"
+            pinned = wheel_spec.releases[release_key].version
+            found = wheel.read(version).decode().strip() if version in names else None
+            if found != pinned:
+                problems.append(f"{version} says {found}, the pin is {pinned}")
             if runtime < MIN_RUNTIME_FILES:
                 problems.append(f"{root}: only {runtime} runtime files")
             if exe not in names:
@@ -90,7 +95,8 @@ def check(path: Path) -> List[str]:
 
         meta = next((n for n in names if n.endswith(".dist-info/WHEEL")), None)
         text = wheel.read(meta).decode() if meta else ""
-        if "Root-Is-Purelib: false" not in text or f"Tag: py3-none-{tag}" not in text:
+        tags_ok = all(f"Tag: py3-none-{part}" in text for part in tag.split("."))
+        if "Root-Is-Purelib: false" not in text or not tags_ok:
             problems.append("WHEEL metadata is not a py3-none platform wheel for this tag")
         if not any(n.endswith(".dist-info/entry_points.txt") for n in names):
             problems.append("missing the console script entry point")

@@ -56,7 +56,9 @@ jobs:
           python -m twine check dist/*
           python scripts/check_wheels.py
       - name: install the linux wheel in a clean venv and use it
-        run: python scripts/smoke_test.py
+        run: |
+          python scripts/smoke_test.py
+          python scripts/smoke_test.py dist/*-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheels

@@ -4,9 +4,11 @@
     python scripts/check_upstream.py            # report
     python scripts/check_upstream.py --strict   # exit 1 if a pin is behind
 
-Also mentions Neovim release lines newer than the newest one supported here.
-Set ``GITHUB_TOKEN`` to lift the anonymous API rate limit.  (Checksums need no
-check here: ``fetch_nvim.py`` verifies them on every build.)
+Checks both pin tables against the repository each comes from: the main builds
+(``neovim/neovim``) and the old-glibc builds (``neovim/neovim-releases``, which
+lags).  Also mentions Neovim release lines newer than the newest one supported
+here.  Set ``GITHUB_TOKEN`` to lift the anonymous API rate limit.  (Checksums
+need no check here: ``fetch_nvim.py`` verifies them on every build.)
 """
 
 from __future__ import annotations
@@ -18,14 +20,14 @@ import re
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_release.platforms import RELEASES  # noqa: E402
+from fast_nvim_release.platforms import OLD_GLIBC_RELEASES, RELEASES, Release  # noqa: E402
 
-API = "https://api.github.com/repos/neovim/neovim/releases?per_page=100&page={}"
+API = "https://api.github.com/repos/{}/releases?per_page=100&page={}"
 TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -41,11 +43,13 @@ def newest_patches(tags: Iterable[str]) -> Dict[str, Tuple[int, int, int]]:
     return newest
 
 
-def fetch_tags() -> list:
-    tags = []
+def fetch_tags(repo: str) -> List[str]:
+    tags: List[str] = []
     token = os.environ.get("GITHUB_TOKEN")
     for page in range(1, 6):
-        request = urllib.request.Request(API.format(page), headers={"User-Agent": "fnr-check"})
+        request = urllib.request.Request(
+            API.format(repo, page), headers={"User-Agent": "fnr-check"}
+        )
         if token:
             request.add_unredirected_header("Authorization", f"Bearer {token}")
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -56,34 +60,64 @@ def fetch_tags() -> list:
     return tags
 
 
-def report(newest: Dict[str, Tuple[int, int, int]]) -> list:
-    """The lines that are out of date, as messages."""
+def _tag(version: Tuple[int, int, int]) -> str:
+    return "v{}.{}.{}".format(*version)
+
+
+def report(newest: Dict[str, Tuple[int, int, int]], pins: Dict[str, Release]) -> List[str]:
+    """Print one pin table against upstream; return the pins that are behind."""
     stale = []
-    for key, release in RELEASES.items():
+    for key, release in pins.items():
         latest = newest.get(key)
-        tag = "v{}.{}.{}".format(*latest) if latest else "nothing"
+        tag = _tag(latest) if latest else "nothing"
         state = "OK" if tag == release.version else "OUTDATED"
         print(f"{key:<6} pinned {release.version:<9} newest {tag:<9} {state}")
         if state != "OK":
-            stale.append(f"{key}: pinned {release.version}, Neovim publishes {tag}")
-    supported = max(tuple(map(int, key.split("."))) for key in RELEASES)
-    for line, version in sorted(newest.items()):
-        if tuple(map(int, line.split("."))) > supported:
-            stale.append("Neovim has a newer release line: v{}.{}.{}".format(*version))
+            stale.append(f"{key}: pinned {release.version}, {release.repo} publishes {tag}")
     return stale
+
+
+def newer_lines(newest: Dict[str, Tuple[int, int, int]]) -> List[str]:
+    """Neovim release lines newer than every line supported here."""
+    supported = max(tuple(map(int, key.split("."))) for key in RELEASES)
+    return [
+        f"Neovim has a newer release line: {_tag(version)}"
+        for line, version in sorted(newest.items())
+        if tuple(map(int, line.split("."))) > supported
+    ]
+
+
+def lagging() -> List[str]:
+    """Lines whose old-glibc build is an older patch than the main one (expected, not stale)."""
+    return [
+        f"{key}: the old-glibc wheel ships {old.version}, the others {RELEASES[key].version}"
+        for key, old in OLD_GLIBC_RELEASES.items()
+        if old.version != RELEASES[key].version
+    ]
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--strict", action="store_true", help="exit 1 if anything is behind")
     args = parser.parse_args(argv)
-    newest = newest_patches(fetch_tags())
-    if not newest:
-        print("error: GitHub listed no Neovim releases", file=sys.stderr)
-        return 2
-    stale = report(newest)
+    stale: List[str] = []
+    for title, repo, pins in (
+        ("main builds", "neovim/neovim", RELEASES),
+        ("old-glibc builds", "neovim/neovim-releases", OLD_GLIBC_RELEASES),
+    ):
+        newest = newest_patches(fetch_tags(repo))
+        if not newest:
+            print(f"error: GitHub listed no releases for {repo}", file=sys.stderr)
+            return 2
+        print(f"{title} ({repo})")
+        stale += report(newest, pins)
+        if pins is RELEASES:
+            stale += newer_lines(newest)
+        print()
     for item in stale:
         print(f"  - {item}")
+    for item in lagging():
+        print(f"  note: {item}")
     return 1 if stale and args.strict else 0
 
 

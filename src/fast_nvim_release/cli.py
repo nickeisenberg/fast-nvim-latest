@@ -36,7 +36,7 @@ def _version_text() -> str:
     here = host_platform()
     if here is None:
         return f"{PROG} {__version__}"
-    builds = ", ".join(RELEASES[key].version for key in bundle.bundled_releases(here))
+    builds = ", ".join(bundle.bundled_version(k, here) for k in bundle.bundled_releases(here))
     return f"{PROG} {__version__} (Neovim {builds or 'none'} for {here.key})"
 
 
@@ -51,9 +51,10 @@ def _on_path(directory: Path) -> bool:
 def cmd_setup(args: argparse.Namespace) -> int:
     release = _release(args.release)
     prefix = bundle.normalize(args.prefix)
-    exe = bundle.install(release, _host(), prefix, force=args.force)
+    here = _host()
+    exe = bundle.install(release, here, prefix, force=args.force)
     bundle.verify(exe, prefix)
-    print(f"installed Neovim {RELEASES[release].version} into {prefix}")
+    print(f"installed Neovim {bundle.bundled_version(release, here)} into {prefix}")
     print(f"  {exe}")
     if not _on_path(exe.parent):
         if os.name == "nt":

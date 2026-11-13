@@ -46,9 +46,30 @@ the arm64 wheel. Use 0.11 or 0.12 there.
 
 pip picks the wheel from the running Python's platform, and you get that
 platform's builds: an x86_64 Python under Rosetta 2 (or an x64 Python on
-Windows on ARM) gets the x86_64 build, which works but runs emulated. Systems
-without an official Neovim build (Alpine/musl, glibc < 2.34, macOS < 11, armv7)
-get no wheel ("no matching distribution").
+Windows on ARM) gets the x86_64 build, which works but runs emulated.
+
+### Older Linux (RHEL 8, CentOS 7, HPC clusters)
+
+Neovim's official Linux builds need glibc 2.34. For older systems there is a
+second Linux wheel built from the builds Neovim publishes in
+[`neovim/neovim-releases`](https://github.com/neovim/neovim-releases), which
+need only glibc 2.17. You don't choose it: `pip install fast-nvim-release`
+picks it on any system too old for the official builds, and picks the official
+builds everywhere else. It works with the pip that RHEL 8's Python 3.9 ships.
+
+| Release | Older-Linux x86_64 | Older-Linux arm64 |
+| --- | --- | --- |
+| `0.10` | 0.10.4 | — |
+| `0.11` | 0.11.7 | — |
+| `0.12` | 0.12.5 | 0.12.5 |
+
+`neovim-releases` usually trails the main releases by a patch or so, which is
+why 0.12 is 0.12.5 there. Neovim calls these builds unsupported; they are built
+by Neovim's CI from the same sources.
+
+Systems with no Neovim build at all (Alpine/musl, macOS < 11, armv7, and
+arm64 with glibc < 2.34 for 0.10/0.11) get no wheel ("no matching
+distribution").
 
 ## Commands
 
@@ -97,7 +118,7 @@ wheels:
 
 ```console
 for p in manylinux_2_34_x86_64 manylinux_2_34_aarch64 macosx_11_0_x86_64 \
-         macosx_11_0_arm64 win_amd64 win_arm64; do
+         macosx_11_0_arm64 win_amd64 win_arm64 manylinux2014_x86_64 manylinux2014_aarch64; do
   pip download fast-nvim-release --no-deps --only-binary=:all: --platform $p -d wheels/
 done
 ```

@@ -183,3 +183,12 @@ def test_bin_names_are_compared_the_way_the_file_system_does(
     monkeypatch.setattr(bundle.os.path, "normcase", str.lower)  # as on Windows
     bundle.install("0.12", host, prefix)
     assert (prefix / "bin" / "DbgHelp.dll").read_text(encoding="utf-8") == "new"
+
+
+def test_the_installed_version_comes_from_the_bundled_build(fake_bundle, host, prefix):
+    """The old-glibc wheel can carry an older patch than the main pin."""
+    (fake_bundle / "0.12" / host.key / "VERSION").write_text("v0.12.5\n", encoding="utf-8")
+    assert bundle.bundled_version("0.12", host) == "v0.12.5"
+    assert bundle.bundled_version("0.11", host) == RELEASES["0.11"].version  # no file: the pin
+    bundle.install("0.12", host, prefix)
+    assert bundle.installed(prefix)["nvim_version"] == "v0.12.5"
