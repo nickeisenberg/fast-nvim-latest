@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 from unittest import mock
 
 import pytest
@@ -66,6 +67,108 @@ def test_the_arm64_glibc_outlier_is_not_bundled():
     assert "glibc" in (RELEASES["0.10"].platform_note("linux-arm64") or "")
     for key in ("0.11", "0.12"):
         assert RELEASES[key].downloaded_not_bundled == ()
+
+
+def test_the_glibc_floor_of_the_download_only_build_is_recorded():
+    """The floor is why it is not bundled, so every downloaded_not_bundled
+    build must have one: without it we would download a binary that cannot
+    start on the systems the wheel still supports."""
+    for key, release in RELEASES.items():
+        for platform_key in release.downloaded_not_bundled:
+            assert platform_key in release.glibc_floors, (key, platform_key)
+            assert release.glibc_floors[platform_key] > (2, 34), (key, platform_key)
+
+    assert RELEASES["0.10"].target("linux-arm64").min_glibc == (2, 38)
+    assert RELEASES["0.12"].target("linux-arm64").min_glibc is None
+    assert "2.38" in (RELEASES["0.10"].platform_note("linux-arm64") or "")
+
+
+def test_a_build_is_refused_when_this_glibc_is_too_old(monkeypatch):
+    """0.10 arm64 on Ubuntu 22.04 / Debian 12 / RHEL 9 must fail up front."""
+    target = RELEASES["0.10"].target("linux-arm64")
+    monkeypatch.setattr(platforms, "host_platform", lambda: PLATFORMS["linux-arm64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: (2, 35))
+    problem = platforms.glibc_problem(target)
+    assert problem is not None
+    assert "glibc 2.38" in problem and "2.35" in problem
+    assert f"setup {DEFAULT_RELEASE}" in problem
+
+
+def test_the_suggestion_skips_a_line_that_needs_more_glibc(monkeypatch):
+    """Suggest a line this system can run, not blindly the newest one."""
+    target = RELEASES["0.10"].target("linux-arm64")
+    monkeypatch.setattr(platforms, "host_platform", lambda: PLATFORMS["linux-arm64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: (2, 35))
+    patched = dict(RELEASES)
+    patched[RELEASE_KEYS[-1]] = replace(
+        RELEASES[RELEASE_KEYS[-1]], glibc_floors={"linux-arm64": (2, 38)}
+    )
+    monkeypatch.setattr(platforms, "RELEASES", patched)
+    problem = platforms.glibc_problem(target) or ""
+    assert f"setup {RELEASE_KEYS[-2]}" in problem
+
+
+def test_the_suggestion_falls_back_to_the_default_when_nothing_fits(monkeypatch):
+    target = RELEASES["0.10"].target("linux-arm64")
+    monkeypatch.setattr(platforms, "host_platform", lambda: PLATFORMS["linux-arm64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: (2, 35))
+    patched = {
+        key: replace(release, glibc_floors=dict(release.glibc_floors, **{"linux-arm64": (2, 38)}))
+        for key, release in RELEASES.items()
+    }
+    monkeypatch.setattr(platforms, "RELEASES", patched)
+    problem = platforms.glibc_problem(target) or ""
+    assert f"setup {DEFAULT_RELEASE}" in problem
+
+
+@pytest.mark.parametrize("have", [(2, 38), (2, 39), (3, 0)])
+def test_a_build_is_allowed_when_this_glibc_is_new_enough(monkeypatch, have):
+    target = RELEASES["0.10"].target("linux-arm64")
+    monkeypatch.setattr(platforms, "host_platform", lambda: PLATFORMS["linux-arm64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: have)
+    assert platforms.glibc_problem(target) is None
+
+
+def test_an_unknown_glibc_never_blocks_an_install(monkeypatch):
+    """musl, a stub libc or a failed probe must not guess "too old"."""
+    target = RELEASES["0.10"].target("linux-arm64")
+    monkeypatch.setattr(platforms, "host_platform", lambda: PLATFORMS["linux-arm64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: None)
+    assert platforms.glibc_problem(target) is None
+
+
+def test_the_glibc_check_only_applies_to_this_platform(monkeypatch):
+    """Cross-installing another platform's build says nothing about our glibc."""
+    target = RELEASES["0.10"].target("linux-arm64")
+    monkeypatch.setattr(platforms, "host_platform", lambda: PLATFORMS["linux-x86_64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: (2, 17))
+    assert platforms.glibc_problem(target) is None
+
+
+def test_releases_without_a_floor_are_never_a_problem(monkeypatch):
+    monkeypatch.setattr(platforms, "host_platform", lambda: PLATFORMS["linux-arm64"])
+    monkeypatch.setattr(platforms, "host_glibc", lambda: (2, 17))
+    assert platforms.glibc_problem(RELEASES["0.12"].target("linux-arm64")) is None
+
+
+def test_host_glibc_parses_what_confstr_reports(monkeypatch):
+    monkeypatch.setattr(platforms, "_host_family", lambda: "linux")
+    monkeypatch.setattr(platforms.os, "confstr", lambda name: "glibc 2.34")
+    assert platforms.host_glibc() == (2, 34)
+
+    monkeypatch.setattr(platforms.os, "confstr", lambda name: "musl 1.2.4")
+    assert platforms.host_glibc() == (1, 2)
+
+    def explode(name):
+        raise ValueError("no such confstr")
+
+    monkeypatch.setattr(platforms.os, "confstr", explode)
+    assert platforms.host_glibc() is None
+
+
+def test_host_glibc_is_posix_only(monkeypatch):
+    monkeypatch.setattr(platforms, "_host_family", lambda: "macos")
+    assert platforms.host_glibc() is None
 
 
 def test_wheel_tags_are_unique_and_cover_every_platform():

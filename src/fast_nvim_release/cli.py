@@ -22,6 +22,7 @@ from .platforms import (
     emulation,
     emulation_note,
     get_release,
+    glibc_problem,
     host_platform,
     is_cross,
     looks_like_release,
@@ -159,6 +160,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
     prefix = bundle.normalize(args.prefix) if args.prefix else bundle.default_prefix()
 
     cross = is_cross(target)
+    problem = glibc_problem(target)
+    if problem:
+        fail(problem)
     explicit_location = bool(args.prefix) or bool(
         os.environ.get("FAST_NVIM_RELEASE_PREFIX", "").strip()
         or os.environ.get("FAST_NVIM_LATEST_PREFIX", "").strip()
