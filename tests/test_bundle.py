@@ -746,8 +746,42 @@ def test_downloads_use_a_per_process_partial_file(monkeypatch, tmp_path):
         "urlopen",
         lambda request, timeout=None: Response(),
     )
-    target = _target(sha256="")
+    target = _target(sha256=hashlib.sha256(b"hi").hexdigest())
     bundle._download(target, tmp_path / "archive.tar.gz")
     assert seen["partials"] == [f"archive.tar.gz.part-{os.getpid()}"]
     assert (tmp_path / "archive.tar.gz").read_bytes() == b"hi"
     assert not list(tmp_path.glob("*.part-*"))
+
+
+def test_an_unpinned_target_is_never_fetched_or_accepted(tmp_path, monkeypatch):
+    """An empty checksum must fail closed, not silently disable verification."""
+    target = _target(sha256="")
+
+    def refuse(request, timeout=None):
+        pytest.fail("downloaded a target that has no pinned checksum")
+
+    monkeypatch.setattr(bundle.urllib.request, "urlopen", refuse)
+    with pytest.raises(bundle.FastNvimError) as excinfo:
+        bundle.fetch_archive(target, offline=True)
+    assert "no pinned sha256" in str(excinfo.value)
+
+    with pytest.raises(bundle.FastNvimError):
+        bundle._download(target, tmp_path / "archive.tar.gz")
+    assert not list(tmp_path.glob("*.part-*"))
+
+
+def test_a_cached_archive_that_does_not_match_the_pin_is_dropped(tmp_path, monkeypatch):
+    """A cache entry must match the pin, not merely exist."""
+    monkeypatch.setenv("FAST_NVIM_RELEASE_CACHE_DIR", str(tmp_path / "cache"))
+    target = _target(sha256="0" * 64)
+    cached = bundle.cached_archive(target)
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"tampered")
+
+    def serve(request, timeout=None):
+        raise bundle.urllib.error.URLError("no network in this test")
+
+    monkeypatch.setattr(bundle.urllib.request, "urlopen", serve)
+    with pytest.raises(bundle.FastNvimError):
+        bundle.fetch_archive(target)
+    assert not cached.exists()  # the stale entry was dropped, not used

@@ -238,6 +238,21 @@ def human_size(num: float) -> str:
     return _human_size(num)
 
 
+def _pinned(target: Target) -> str:
+    """The sha256 pinned for ``target``; refusing to fetch without one.
+
+    An empty pin used to mean "skip verification".  A checksum that silently
+    disappears (a bad edit to RELEASES) must fail loudly instead of turning
+    every download into an unverified one.
+    """
+    if not target.sha256:
+        raise FastNvimError(
+            f"{target.label} has no pinned sha256; refusing to use an unverified archive\n"
+            "  pin it in src/fast_nvim_release/platforms.py (RELEASES)"
+        )
+    return target.sha256
+
+
 def _download(
     target: Target,
     dest: Path,
@@ -245,6 +260,7 @@ def _download(
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     """Download ``target``'s archive to ``dest``, verifying its sha256."""
+    expected = _pinned(target)
     dest.parent.mkdir(parents=True, exist_ok=True)
     # unique per process, so two concurrent downloads cannot interleave
     partial = dest.with_name(f"{dest.name}.part-{os.getpid()}")
@@ -275,12 +291,10 @@ def _download(
         ) from exc
 
     actual = digest.hexdigest()
-    if target.sha256 and actual != target.sha256:
+    if actual != expected:
         partial.unlink(missing_ok=True)
         raise FastNvimError(
-            f"checksum mismatch for {target.asset}:\n"
-            f"  expected {target.sha256}\n"
-            f"  got      {actual}"
+            f"checksum mismatch for {target.asset}:\n  expected {expected}\n  got      {actual}"
         )
     os.replace(partial, dest)
 
@@ -292,9 +306,10 @@ def fetch_archive(
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> Path:
     """Return a checksum-verified local archive for ``target``."""
+    expected = _pinned(target)
     archive = cached_archive(target)
     if archive.is_file():
-        if not target.sha256 or _sha256(archive) == target.sha256:
+        if _sha256(archive) == expected:
             return archive
         archive.unlink()  # stale/corrupt cache entry
     if offline:
