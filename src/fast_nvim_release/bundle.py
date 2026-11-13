@@ -493,7 +493,17 @@ def ensure_bundle(
     had_archive = cached_archive(target).is_file()
     archive = fetch_archive(target, offline=offline, progress=progress)
     tree.parent.mkdir(parents=True, exist_ok=True)
-    return extract_archive(target, archive, tree), "cache" if had_archive else "download"
+    # two `setup` runs (or a setup and a `run`) may want the same cache entry;
+    # extract_archive swaps a shared <tree>.old aside, so let one at a time in
+    with _lock(cache_lock(tree)):
+        if _exe_ok(tree / "bin" / target.exe):  # the other process just finished
+            return tree, "cache"
+        return extract_archive(target, archive, tree), "cache" if had_archive else "download"
+
+
+def cache_lock(tree: Path) -> Path:
+    """The lock file that serializes extraction into one cached ``tree``."""
+    return Path(tree).parent / f".{Path(tree).name}.lock"
 
 
 # --------------------------------------------------------------------------
@@ -628,8 +638,8 @@ def _lock(path: Path, timeout: float = LOCK_TIMEOUT) -> Iterator[None]:
                 continue
             if time.monotonic() > deadline:
                 raise FastNvimError(
-                    f"another fast-nvim-release setup is running in {path.parent.parent} "
-                    f"(lock file {path}); remove it if that is not the case"
+                    f"another fast-nvim-release process is holding {path} "
+                    "(remove it if that is not the case)"
                 ) from None
             time.sleep(0.1)
     try:
