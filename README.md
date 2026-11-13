@@ -112,59 +112,10 @@ Everything after `fast-nvim-release run` goes to Neovim untouched:
 `fast-nvim-release run -- -u NONE --headless "+q"`, or
 `fast-nvim-release run 0.10 -- --version`.
 
-## Why one wheel per platform
+## Contributing
 
-A wheel can only contain one platform's executables, so each release publishes
-**six wheels with the same version and different platform tags**:
-
-```
-fast_nvim_release-0.2.0-py3-none-manylinux_2_34_x86_64.whl   35.6 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-manylinux_2_34_aarch64.whl  24.1 MB  2 releases (no 0.10)
-fast_nvim_release-0.2.0-py3-none-macosx_11_0_x86_64.whl      31.2 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-macosx_11_0_arm64.whl       30.3 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-win_amd64.whl               36.1 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-win_arm64.whl               25.7 MB  2 releases (no 0.10)
-```
-
-Each wheel carries its releases for one platform (~100 MiB installed), so
-`pip install` is one download for everything. The largest wheel is 36 MB,
-comfortably inside PyPI's 100 MB per-file limit; a full release uploads ~183 MB
-against a 10 GB project limit. See
-<https://docs.pypi.org/project-management/storage-limits/>.
-
-This is the same one-wheel-per-platform scheme `ruff` and `uv` use.
-
-If you want a smaller wheel, vendor only some releases before building
-(`python scripts/fetch_nvim.py --release 0.12`); the others then come from
-GitHub on first use. `scripts/check_wheels.py` accepts a partial set, as long
-as the tagged platform's builds are present and complete.
-
-## Development
-
-```console
-$ python -m pytest                 # 178 tests, no network needed
-$ python -m ruff check .           # lint (CI runs this)
-$ python -m ruff format --check .
-$ python scripts/fetch_nvim.py     # vendor every release for this platform
-$ python scripts/fetch_nvim.py --release 0.12 --platform windows
-$ python -m build --wheel          # single wheel for this platform
-```
-
-Layout:
-
-```
-src/fast_nvim_release/cli.py       setup / path / version / run
-src/fast_nvim_release/bundle.py    vendored bundles, cache, extraction, installation
-src/fast_nvim_release/platforms.py  release + platform matrix (single source of truth)
-setup.py                           platform wheel tags, refuses empty/mislabelled wheels
-scripts/fetch_nvim.py              download/extract release archives into the package
-scripts/build_wheels.py            build all six wheels from one machine
-scripts/check_wheels.py            validate wheels (tag vs. binaries, runtime, licences)
-scripts/smoke_test.py              install a wheel in a clean venv and use it
-```
-
-Vendored trees live at `src/fast_nvim_release/_nvim/<release>/<platform>/`, and
-each release's `BUILD_INFO.json` records the archive sha256 it came from.
+Bugs, build details and how to add a Neovim release are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
