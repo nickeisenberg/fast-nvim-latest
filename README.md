@@ -166,20 +166,6 @@ scripts/smoke_test.py              install a wheel in a clean venv and use it
 Vendored trees live at `src/fast_nvim_release/_nvim/<release>/<platform>/`, and
 each release's `BUILD_INFO.json` records the archive sha256 it came from.
 
-## Migrating from `fast-nvim-latest`
-
-The project was called `fast-nvim-latest` up to 0.1.0. The package, module,
-console script, marker directory and environment variables were all renamed:
-
-```
-fast-nvim-latest      -> fast-nvim-release
-fast_nvim_latest      -> fast_nvim_release
-FAST_NVIM_LATEST_*    -> FAST_NVIM_RELEASE_*
-```
-
-The old `FAST_NVIM_LATEST_PREFIX` / `FAST_NVIM_LATEST_CACHE_DIR` variables are
-still honoured as a fallback, so existing scripts keep working.
-
 ## License
 
 fast-nvim-release is MIT licensed. The vendored Neovim binaries and runtime are
