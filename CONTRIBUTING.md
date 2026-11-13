@@ -52,6 +52,7 @@ setup.py                            platform wheel tags, refuses empty/mislabell
 scripts/fetch_nvim.py               download/extract release archives into the package
 scripts/build_wheels.py             build all six wheels from one machine
 scripts/check_wheels.py             validate wheels (tag vs. binaries, runtime, licences)
+scripts/check_upstream.py           compare the pins with Neovim's own releases
 scripts/smoke_test.py               install a wheel in a clean venv and use it
 ```
 
@@ -86,8 +87,42 @@ wheel, vendor only some releases before building
 on first use. `check_wheels.py` accepts a partial set, as long as the tagged
 platform's builds are present and complete.
 
+## Staying up to date
+
+`platforms.py` is a hand-maintained copy of what Neovim publishes, so something
+has to notice when upstream moves:
+
+```console
+$ python scripts/check_upstream.py             # report
+$ python scripts/check_upstream.py --strict    # exit non-zero unless every pin is current
+```
+
+It asks GitHub for Neovim's release list and checks two things:
+
+- each pinned version is the newest patch of its release line, and a release
+  line newer than the newest one supported here is called out;
+- each pinned `(sha256, size)` matches the checksum Neovim published for that
+  archive — from the asset's digest, or from the release's own `.sha256sum`
+  file for archives uploaded before GitHub recorded digests (all of 0.10.x).
+  Only a few hundred bytes are downloaded, never an archive.
+
+A wrong checksum or size always fails; merely being behind upstream fails only
+with `--strict`. Set `GITHUB_TOKEN` to lift the anonymous API rate limit.
+
+`.github/workflows/upstream.yml` runs the strict check every Monday, so a stale
+pin shows up as a red build instead of as a user noticing `setup 0.12` installs
+an old patch. The live tests in `tests/test_upstream.py` ask GitHub for real
+and are skipped unless `FAST_NVIM_RELEASE_NETWORK_TESTS=1` is set — the rest of
+the suite stays offline:
+
+```console
+$ FAST_NVIM_RELEASE_NETWORK_TESTS=1 python -m pytest tests/test_upstream.py
+```
+
 ## Adding or bumping a release
 
+0. `python scripts/check_upstream.py` prints the newest tag per release line;
+   that is what step 1 should pin.
 1. Add or update the entry in `RELEASES` in `platforms.py`: the pinned `version`,
    then `(sha256, size)` per platform. Take the checksum from the release's own
    `.sha256sum` file or GitHub's asset digest, and verify it against a local
@@ -104,7 +139,9 @@ platform's builds are present and complete.
    fetched on demand: it needs glibc 2.38 while 0.11/0.12 need 2.34, and
    vendoring it would push the arm64 wheel to `manylinux_2_38` and drop Ubuntu
    22.04, Debian 12 and RHEL 9.
-4. `python scripts/fetch_nvim.py --all --force`, then
+4. `python scripts/check_upstream.py --strict`: the new pin must be the newest
+   patch and its checksums must match Neovim's published ones.
+5. `python scripts/fetch_nvim.py --all --force`, then
    `python scripts/build_wheels.py --all` and `python scripts/check_wheels.py`.
 
 ## Releasing

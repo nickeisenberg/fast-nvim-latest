@@ -1,0 +1,41 @@
+name: upstream
+
+# Neovim ships a patch release every few weeks, and nothing else in this repo
+# would notice: ci.yml only runs when *we* change something. This job asks
+# GitHub whether a pin is behind, so staleness shows up as a red build instead
+# of as a user asking why `setup 0.12` installs an old patch.
+#
+# It also re-verifies every pinned sha256 against the checksum Neovim
+# published, which catches a mistyped or silently re-uploaded archive.
+#
+# The only output is a failing job (and the log explaining which pin to bump);
+# it builds nothing and publishes nothing.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC (off the hour; GitHub's busiest time)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  pins:
+    name: pins match Neovim's releases
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # nothing is installed on purpose: the check uses only the standard
+      # library and this repo's own source tree, so there is no tool pin here
+      # to keep in sync with ci.yml
+      - name: compare the pins with GitHub
+        run: python scripts/check_upstream.py --strict
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
