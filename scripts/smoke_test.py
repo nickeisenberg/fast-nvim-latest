@@ -151,11 +151,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             ]
         )
         installed_runtime = result.stdout.decode("utf-8", "replace").strip()
-        if result.returncode or Path(installed_runtime) != prefix / "share" / "nvim" / "runtime":
+        # resolve both sides: macOS turns /var/folders/... into /private/var/...
+        expected_runtime = (prefix / "share" / "nvim" / "runtime").resolve()
+        actual_runtime = Path(installed_runtime).resolve() if installed_runtime else None
+        if result.returncode or actual_runtime != expected_runtime:
             fail(
-                "installed nvim uses {!r}, expected {}".format(
-                    installed_runtime, prefix / "share" / "nvim" / "runtime"
-                ),
+                f"installed nvim uses {installed_runtime!r}, expected {expected_runtime}",
                 result.stdout,
             )
         print(f"  installed VIMRUNTIME: {installed_runtime}")

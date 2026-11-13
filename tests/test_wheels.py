@@ -422,3 +422,31 @@ def test_the_rehearsal_runs_the_same_gate_as_the_real_upload():
     assert "check_wheels.py" in rehearsal
     real = release.split("publish-pypi:", 1)[1]
     assert "check_wheels.py" in real
+
+
+def test_ci_failure_annotations_are_extracted_from_a_log(tmp_path, capsys):
+    import annotate_ci_failures
+
+    log = tmp_path / "pytest.log"
+    log.write_text(
+        "some progress\n"
+        "FAILED tests/test_cli.py::test_x - AssertionError: nope\n"
+        "noise\n"
+        "E   RuntimeError: boom\n",
+        encoding="utf-8",
+    )
+    assert annotate_ci_failures.main([str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "::error::FAILED tests/test_cli.py::test_x" in out
+    assert "::error::E   RuntimeError: boom" in out
+
+
+def test_ci_annotations_do_not_invent_failures(tmp_path, capsys):
+    import annotate_ci_failures
+
+    log = tmp_path / "pytest.log"
+    log.write_text("135 passed in 0.9s\n", encoding="utf-8")
+    assert annotate_ci_failures.main([str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "::error::" not in out
+    assert "::warning::" in out
