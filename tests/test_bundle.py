@@ -364,6 +364,19 @@ def test_marker_names_cannot_escape_the_prefix(fake_bundle, prefix, host_key):
     assert outside.is_file()
 
 
+def test_a_marker_with_a_string_bin_field_is_ignored(fake_bundle, prefix, host_key):
+    """``"bin": "nvim"`` is not a list of names; it must not be iterated."""
+    target = RELEASES["0.12"].target(host_key)
+    bundle.install(target, bundle.bundle_path("0.12", host_key), prefix)
+    marker = bundle.marker_info(prefix, "0.12", host_key)
+    marker["bin"] = target.exe  # a string, not a list
+    bundle.marker_file(prefix, "0.12", host_key).write_text(json.dumps(marker), encoding="utf-8")
+
+    assert bundle._marker_bin_names(marker) == []
+    bundle.install(target, bundle.bundle_path("0.12", host_key), prefix)
+    assert (prefix / "bin" / target.exe).is_file()  # nothing was unlinked
+
+
 # --------------------------------------------------------------------------
 # failures must not wedge the prefix
 # --------------------------------------------------------------------------

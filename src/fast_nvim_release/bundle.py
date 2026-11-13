@@ -787,6 +787,18 @@ def _plain_name(name: object) -> bool:
     )
 
 
+def _marker_bin_names(info: Dict[str, object]) -> List[str]:
+    """The bin entries a marker claims, ignoring anything malformed.
+
+    A marker is a file users can edit, and ``"bin": "nvim"`` (a string) would
+    otherwise be iterated character by character.
+    """
+    names = info.get("bin")
+    if not isinstance(names, list):
+        return []
+    return [name for name in names if _plain_name(name)]
+
+
 def _drop_other_installs(prefix: Path, keep: Tuple[str, str]) -> List[str]:
     """Forget other builds' markers and report bin entries they owned.
 
@@ -799,9 +811,8 @@ def _drop_other_installs(prefix: Path, keep: Tuple[str, str]) -> List[str]:
     for release_key, platform_key in installed_builds(prefix):
         if (release_key, platform_key) == keep:
             continue
-        for name in marker_info(prefix, release_key, platform_key).get("bin") or []:
-            if _plain_name(name):
-                stale.append(name)
+        for name in _marker_bin_names(marker_info(prefix, release_key, platform_key)):
+            stale.append(name)
         marker_file(prefix, release_key, platform_key).unlink(missing_ok=True)
     return stale
 
@@ -924,8 +935,8 @@ def install(
         # the bin entries it owned) can no longer strand the prefix
         stale_names = _drop_other_installs(prefix, (target.release_key, target.key))
         if managed or replace or others:
-            for name in list(previous.get("bin") or []) + stale_names:
-                if name not in bin_names and _plain_name(name):
+            for name in _marker_bin_names(previous) + stale_names:
+                if name not in bin_names:
                     _remove(prefix / "bin" / name)
 
         exe = prefix / "bin" / target.exe
