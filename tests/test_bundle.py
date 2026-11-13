@@ -224,9 +224,10 @@ def test_bundled_targets_are_detected(fake_bundle):
     assert bundle.bundled_nvim_version() == "v9.9.9"
 
 
-def test_default_prefix_can_be_overridden(monkeypatch):
-    monkeypatch.setenv("FAST_NVIM_LATEST_PREFIX", "/tmp/custom-nvim-prefix")
-    assert str(bundle.default_prefix()) == "/tmp/custom-nvim-prefix"
+def test_default_prefix_can_be_overridden(monkeypatch, tmp_path):
+    wanted = tmp_path / "custom-nvim-prefix"
+    monkeypatch.setenv("FAST_NVIM_LATEST_PREFIX", str(wanted))
+    assert bundle.default_prefix() == wanted
 
 
 def test_human_size():

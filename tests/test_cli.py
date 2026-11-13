@@ -128,7 +128,8 @@ def test_path_json(fake_bundle, prefix, capsys):
 
 def test_path_bundle(fake_bundle, capsys):
     assert main(["path", "--bundle"]) == 0
-    assert bundle.bundle_path(host_target().key).as_posix() in capsys.readouterr().out
+    # the command prints a native path, so compare natively (Windows uses \)
+    assert str(bundle.bundle_path(host_target().key)) in capsys.readouterr().out
 
 
 def test_path_installed_only_fails_when_absent(fake_bundle, prefix, capsys):
