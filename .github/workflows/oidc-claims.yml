@@ -1,0 +1,30 @@
+name: oidc-claims
+
+# Temporary diagnostic: print the OIDC token claims GitHub mints for the
+# `testpypi` environment, so we can see exactly what PyPI is told to match.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+    steps:
+      - name: fetch and decode the OIDC token
+        run: |
+          url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pypi"
+          curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "$url" -o token.json
+          python3 - <<'PY'
+          import base64, json
+          payload = json.load(open("token.json"))["value"].split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ("repository", "repository_owner", "workflow", "job_workflow_ref",
+                      "environment", "ref", "sub", "aud"):
+              print(f"{key:20} {claims.get(key)}")
+          PY
