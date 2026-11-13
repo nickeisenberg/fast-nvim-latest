@@ -98,19 +98,6 @@ def _progress_printer(target: Target):
     return report
 
 
-def _origin(target: Target) -> Tuple[str, Optional[Path]]:
-    """Where a build would come from, without fetching anything."""
-    if bundle.has_bundled(target):
-        return "pip wheel", bundle.bundle_path(target.release_key, target.key)
-    tree = bundle.cached_tree(target)
-    if (tree / "bin" / target.exe).is_file():
-        return "cache", tree
-    archive = bundle.cached_archive(target)
-    if archive.is_file():
-        return "cached archive", archive
-    return "download", None
-
-
 def _looks_numeric(value: str) -> bool:
     """True for input the user almost certainly meant as a release."""
     text = value.strip().lower()
@@ -204,7 +191,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         warn(note)
 
     if args.dry_run:
-        origin, where = _origin(target)
+        origin, where = bundle.origin(target)
         info("   source  {}{}".format(origin, f" ({where})" if where else " (not fetched yet)"))
         info("")
         info("dry run: would install")
@@ -298,18 +285,17 @@ def _can_symlink() -> bool:
         return False
 
 
+#: The words a table column uses for each of bundle.origin()'s answers.
+_STATUS_WORDS = {"pip wheel": "bundled", "cache": "cached"}
+
+
 def _release_status(release_key: str, platform_key: str) -> str:
     """How ``release_key`` would be obtained for ``platform_key``."""
     target = RELEASES[release_key].target(platform_key)
     if target is None:
         return "unavailable"  # Neovim never published it for that platform
-    if bundle.has_bundled(target):
-        return "bundled"
-    if (bundle.cached_tree(target) / "bin" / target.exe).is_file():
-        return "cached"
-    if bundle.cached_archive(target).is_file():
-        return "cached archive"
-    return "download"
+    kind, _where = bundle.origin(target)
+    return _STATUS_WORDS.get(kind, kind)
 
 
 def _list_releases() -> int:

@@ -177,13 +177,29 @@ def default_prefix() -> Path:
     return Path.home() / ".local"
 
 
+def origin(target: Target) -> Tuple[str, Optional[Path]]:
+    """Where ``target`` would come from, without fetching anything.
+
+    The one place that decides this: ``setup`` prints it, ``--list`` reports it
+    and ``needs_download`` asks it whether to mention a download.
+
+    :returns: ``("pip wheel", path)`` for a bundled build, ``("cache", tree)``,
+        ``("cached archive", path)``, or ``("download", None)``.
+    """
+    if has_bundled(target):
+        return "pip wheel", bundle_path(target.release_key, target.key)
+    tree = cached_tree(target)
+    if _exe_ok(tree / "bin" / target.exe):
+        return "cache", tree
+    archive = cached_archive(target)
+    if archive.is_file():
+        return "cached archive", archive
+    return "download", None
+
+
 def needs_download(target: Target) -> bool:
     """True if ``target`` is neither bundled nor unpacked/cached locally."""
-    if has_bundled(target):
-        return False
-    if _exe_ok(cached_tree(target) / "bin" / target.exe):
-        return False
-    return not cached_archive(target).is_file()
+    return origin(target)[0] == "download"
 
 
 def _sha256(path: Path) -> str:
@@ -304,7 +320,12 @@ def fetch_archive(
 # archives -> neonvim tree
 # --------------------------------------------------------------------------
 def _keep(relative: str) -> bool:
-    for part in ("bin", "lib/nvim", "share/nvim/runtime"):
+    """True for the archive directories :data:`BUNDLE_PARTS` asks for.
+
+    Derived from that table so adding a part cannot leave extraction silently
+    ignoring it.
+    """
+    for part, _destination in BUNDLE_PARTS:
         if relative == part or relative.startswith(part + "/"):
             return True
     return False
