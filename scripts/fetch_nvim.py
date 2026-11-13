@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Download, verify and unpack the Neovim builds one wheel carries.
 
-    python scripts/fetch_nvim.py                    # this machine's main wheel
+    python scripts/fetch_nvim.py                    # the wheel this machine needs
     python scripts/fetch_nvim.py --wheel win_arm64  # another one (cross-build)
 
 Every build listed for the wheel in ``platforms.WHEELS`` is unpacked into
@@ -36,6 +36,7 @@ from fast_nvim_release.platforms import (  # noqa: E402
     Platform,
     Release,
     host_platform,
+    host_wheel_tag,
 )
 
 DEST = ROOT / "src" / "fast_nvim_release" / "_nvim"
@@ -107,21 +108,30 @@ def check_runs(exe: Path, version: str) -> None:
     result = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=60)
     first = (result.stdout.splitlines() or [""])[0]
     if result.returncode or version not in first:
-        raise SystemExit(f"{exe} --version printed {first!r}, expected {version}")
+        reason = result.stderr.strip() or f"it printed {first!r}"
+        raise SystemExit(
+            f"{exe} does not run here (expected {version}):\n  {reason}\n"
+            "  building for another kind of machine? pass --wheel (see --help)"
+        )
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--wheel", choices=sorted(WHEELS), help="default: this machine's")
+    parser.add_argument(
+        "--wheel",
+        choices=sorted(WHEELS),
+        help="which wheel's builds to fetch (default: the one pip would install on this machine)",
+    )
     parser.add_argument("--dest", type=Path, default=DEST, help=f"default: {DEST}")
     args = parser.parse_args(argv)
     if not hasattr(tarfile, "data_filter"):
         raise SystemExit("needs tarfile extraction filters (Python 3.12+, or 3.9.17+/3.10.12+)")
 
     here = host_platform()
-    if args.wheel is None and here is None:
+    tag = args.wheel or host_wheel_tag()
+    if tag is None:
         raise SystemExit("cannot detect this platform; pass --wheel")
-    wheel = WHEELS[args.wheel or here.wheel_tag]
+    wheel = WHEELS[tag]
     platform = PLATFORMS[wheel.platform]
 
     for release_key, release in wheel.releases.items():

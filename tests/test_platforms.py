@@ -97,3 +97,27 @@ def test_every_wheel_carries_the_builds_pinned_for_its_platform():
         assert release.url("linux-x86_64").startswith(
             "https://github.com/neovim/neovim-releases/releases/download/"
         )
+
+
+@pytest.mark.parametrize(
+    "machine, glibc, tag",
+    [
+        ("x86_64", (2, 39), "manylinux_2_34_x86_64"),
+        ("x86_64", (2, 34), "manylinux_2_34_x86_64"),
+        ("x86_64", (2, 28), "manylinux_2_17_x86_64.manylinux2014_x86_64"),  # RHEL 8
+        ("aarch64", (2, 28), "manylinux_2_17_aarch64.manylinux2014_aarch64"),
+        ("x86_64", None, "manylinux_2_34_x86_64"),  # glibc unknown (e.g. musl)
+    ],
+)
+def test_the_wheel_for_this_machine_follows_glibc_like_pip(monkeypatch, machine, glibc, tag):
+    monkeypatch.setattr(platforms.sys, "platform", "linux")
+    monkeypatch.setattr(platforms.platform, "machine", lambda: machine)
+    monkeypatch.setattr(platforms, "host_glibc", lambda: glibc)
+    assert platforms.host_wheel_tag() == tag
+
+
+def test_glibc_does_not_matter_off_linux(monkeypatch):
+    monkeypatch.setattr(platforms.sys, "platform", "darwin")
+    monkeypatch.setattr(platforms.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(platforms, "host_glibc", lambda: (2, 17))
+    assert platforms.host_wheel_tag() == "macosx_11_0_arm64"

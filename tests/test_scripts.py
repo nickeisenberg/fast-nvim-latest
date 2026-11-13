@@ -12,6 +12,7 @@ import check_upstream
 import check_wheels
 import fetch_nvim
 import pytest
+from conftest import POSIX_ONLY
 
 from fast_nvim_release.platforms import OLD_GLIBC_RELEASES, PLATFORMS, RELEASES, WHEELS
 
@@ -220,3 +221,15 @@ def test_a_lagging_old_glibc_build_is_a_note_not_a_failure():
     assert check_upstream.lagging() == [
         "0.12: the old-glibc wheel ships v0.12.5, the others v0.12.6"
     ]
+
+
+@POSIX_ONLY
+def test_a_build_that_cannot_run_here_says_why(tmp_path):
+    exe = tmp_path / "nvim"
+    exe.write_text("#!/bin/sh\necho \"nvim: version 'GLIBC_2.34' not found\" >&2\nexit 1\n")
+    exe.chmod(0o755)
+    with pytest.raises(SystemExit) as excinfo:
+        fetch_nvim.check_runs(exe, "v0.12.6")
+    message = str(excinfo.value)
+    assert "GLIBC_2.34' not found" in message
+    assert "--wheel" in message
