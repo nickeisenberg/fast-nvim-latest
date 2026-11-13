@@ -270,25 +270,36 @@ def _download(
     )
     digest = hashlib.sha256()
     seen = 0
+    # The pinned size is the most we will ever write: a server that keeps
+    # sending must not fill the cache directory before the checksum is checked.
+    limit = target.size if target.size > 0 else None
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            total = int(response.headers.get("Content-Length") or target.size)
-            with partial.open("wb") as out:
-                while True:
-                    chunk = response.read(1024 * 256)
-                    if not chunk:
-                        break
-                    digest.update(chunk)
-                    seen += len(chunk)
-                    out.write(chunk)
-                    if progress:
-                        progress(seen, total)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
-        partial.unlink(missing_ok=True)
-        raise FastNvimError(
-            f"could not download {target.url}\n  {exc}\n"
-            "  (no network? pass --offline to use a previously downloaded copy)"
-        ) from exc
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                total = int(response.headers.get("Content-Length") or target.size)
+                with partial.open("wb") as out:
+                    while True:
+                        chunk = response.read(1024 * 256)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        seen += len(chunk)
+                        out.write(chunk)
+                        if limit is not None and seen > limit:
+                            raise FastNvimError(
+                                f"{target.asset} is larger than the {target.size} bytes pinned\n"
+                                "  in platforms.py; aborting the download"
+                            )
+                        if progress:
+                            progress(seen, total)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+            raise FastNvimError(
+                f"could not download {target.url}\n  {exc}\n"
+                "  (no network? pass --offline to use a previously downloaded copy)"
+            ) from exc
+    except BaseException:
+        partial.unlink(missing_ok=True)  # never leave a half-written archive behind
+        raise
 
     actual = digest.hexdigest()
     if actual != expected:
