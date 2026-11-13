@@ -564,17 +564,24 @@ def installed_builds(prefix: Path) -> List[Tuple[str, str]]:
 
 
 def installed_targets(prefix: Path) -> List[Target]:
-    """The builds fast-nvim-release installed into ``prefix``, as targets."""
+    """The builds fast-nvim-release *finished* installing into ``prefix``.
+
+    A marker alone is not enough: ``install`` writes one before it copies
+    anything, so a killed or failed install leaves a marker behind.  Reporting
+    those here would contradict ``setup``'s refusal to call the prefix
+    installed (``cmd_setup``) and ``path --installed-only``.
+    """
     targets = []
     for release_key, platform_key in installed_builds(prefix):
         target = RELEASES[release_key].target(platform_key)
-        if target is not None:
+        if target is not None and is_complete(prefix, release_key, platform_key):
             targets.append(target)
     return targets
 
 
 def installed_releases(prefix: Path) -> List[str]:
-    return sorted({release_key for release_key, _ in installed_builds(prefix)})
+    """Release lines installed *and* finished in ``prefix``, oldest first."""
+    return sorted({target.release_key for target in installed_targets(prefix)})
 
 
 def _lock_is_stale(path: Path) -> bool:

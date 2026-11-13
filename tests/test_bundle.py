@@ -421,6 +421,18 @@ def test_a_failed_copy_never_destroys_the_working_install(
 
 
 @POSIX_ONLY
+def test_installed_state_needs_a_finished_install_not_just_a_marker(fake_bundle, prefix, host_key):
+    """A marker left by a killed install must not count as "installed"."""
+    target = RELEASES["0.12"].target(host_key)
+    bundle.install(target, bundle.bundle_path("0.12", host_key), prefix)
+    assert bundle.installed_releases(prefix) == ["0.12"]
+
+    (prefix / "bin" / target.exe).unlink()  # as if the copy died half way
+    assert bundle.is_managed(prefix, "0.12", host_key)  # the marker is still there
+    assert bundle.installed_targets(prefix) == []
+    assert bundle.installed_releases(prefix) == []
+
+
 def test_a_leftover_staging_tree_is_cleared(fake_bundle, prefix, host_key):
     staging = prefix / bundle.MARKER_DIR / ".staging"
     (staging / "lib" / "nvim").mkdir(parents=True)

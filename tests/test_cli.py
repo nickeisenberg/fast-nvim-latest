@@ -379,6 +379,16 @@ def test_path_installed_only_requires_the_executable(fake_bundle, prefix, capsys
     payload = json.loads(capsys.readouterr().out)
     assert payload["installed"] is False
     assert payload["managed"] is True
+    assert payload["installed_releases"] == []
+
+    # `version` must not contradict that by still claiming an install
+    assert main(["version", "--prefix", str(prefix), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["installed"] == []
+
+    assert main(["version", "--prefix", str(prefix)]) == 0
+    out = capsys.readouterr().out
+    assert "nothing" in out
 
 
 def test_path_bundle_fails_for_a_missing_build(tmp_path, monkeypatch, capsys):
