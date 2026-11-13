@@ -929,19 +929,24 @@ def neovim_version(exe: Path, timeout: float = 60.0) -> str:
     return first[0].strip()
 
 
+#: Arguments for the start-up probe that reads ``$VIMRUNTIME``.  ``-i NONE``
+#: matters as much as ``-u NONE``: without it Neovim reads *and rewrites* the
+#: user's shada file, so a plain ``setup`` would quietly touch their marks,
+#: registers and history (and race with an editor they have open).
+PROBE_ARGS: Tuple[str, ...] = (
+    "-u",
+    "NONE",
+    "-i",
+    "NONE",
+    "--headless",
+    "+lua io.write(vim.env.VIMRUNTIME)",
+    "+q",
+)
+
+
 def runtime_path(exe: Path, timeout: float = 60.0) -> str:
     """Ask the binary which ``$VIMRUNTIME`` it resolved (start-up check)."""
-    result = _run(
-        exe,
-        [
-            "-u",
-            "NONE",
-            "--headless",
-            "+lua io.write(vim.env.VIMRUNTIME)",
-            "+q",
-        ],
-        timeout,
-    )
+    result = _run(exe, list(PROBE_ARGS), timeout)
     output = result.stdout.decode("utf-8", "replace").strip()
     if result.returncode != 0:
         raise FastNvimError(f"{exe} could not start (exit {result.returncode}):\n{output}")
