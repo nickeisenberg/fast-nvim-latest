@@ -621,7 +621,14 @@ def installed_releases(prefix: Path) -> List[str]:
 
 
 def _lock_is_stale(path: Path) -> bool:
-    """True if nobody is holding ``path`` any more (killed process, old file)."""
+    """True if nobody is holding ``path`` any more (killed process, old file).
+
+    On Windows we cannot probe a pid (``os.kill(pid, 0)`` is not a no-op
+    there), so a leftover lock is only taken over by age.  A waiter gives up
+    after ``LOCK_TIMEOUT`` with a message naming the file, so the worst case is
+    a 60-second stall followed by "remove it if that is not the case" -- not a
+    wedged prefix.
+    """
     try:
         age = time.time() - path.stat().st_mtime
     except OSError:  # pragma: no cover - released in the meantime
@@ -669,8 +676,12 @@ def _lock(path: Path, timeout: float = LOCK_TIMEOUT) -> Iterator[None]:
                 ) from None
             time.sleep(0.1)
     try:
-        os.write(handle, f"{os.getpid()}\n".encode("ascii"))
-        os.close(handle)
+        try:
+            os.write(handle, f"{os.getpid()}\n".encode("ascii"))
+        finally:
+            # close first: a failed write (a full disk, a quota) must not leak
+            # the descriptor
+            os.close(handle)
         yield
     finally:
         path.unlink(missing_ok=True)

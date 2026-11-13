@@ -465,6 +465,28 @@ def test_staging_is_not_left_behind_by_a_successful_install(fake_bundle, prefix,
     assert bundle.neovim_version(prefix / "bin" / target.exe) == "NVIM 0.12.6"
 
 
+def test_a_failed_lock_write_closes_the_descriptor(tmp_path, monkeypatch):
+    """A full disk while writing the pid must not leak an fd per attempt."""
+    closed = []
+    real_close = os.close
+
+    def fail_write(handle, data):
+        raise OSError(28, "No space left on device")
+
+    def spy_close(handle):
+        closed.append(handle)
+        real_close(handle)
+
+    monkeypatch.setattr(bundle.os, "write", fail_write)
+    monkeypatch.setattr(bundle.os, "close", spy_close)
+    lock = tmp_path / "share" / "fast-nvim-release" / ".lock"
+    with pytest.raises(OSError):
+        with bundle._lock(lock):
+            pass  # pragma: no cover - the write fails first
+    assert len(closed) == 1
+    assert not lock.exists()
+
+
 @POSIX_ONLY
 def test_a_lock_left_by_a_dead_process_is_ignored(fake_bundle, prefix, host_key):
     lock = prefix / bundle.MARKER_DIR / ".lock"
