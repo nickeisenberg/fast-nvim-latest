@@ -102,7 +102,8 @@ def test_an_interrupted_install_can_be_rerun_without_force(fake_bundle, host, pr
     monkeypatch.setattr(bundle, "_copy", copy_then_fail)
     with pytest.raises(OSError):
         bundle.install("0.12", host, prefix)
-    monkeypatch.undo()
+    # restore only _copy: undo() would also drop the fake_bundle fixture's patch
+    monkeypatch.setattr(bundle, "_copy", real_copy)
     bundle.install("0.12", host, prefix)
     assert (prefix / "bin" / host.exe).is_file()
 
