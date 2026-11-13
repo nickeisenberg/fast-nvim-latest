@@ -1,15 +1,16 @@
 [build-system]
-requires = ["setuptools>=70.1", "wheel"]
+# PEP 639 (license = "MIT", license-files) needs setuptools >= 77
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fast-nvim"
+name = "fast-nvim-latest"
 description = "Neovim, shipped in a pip wheel: one install, one setup command."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
-authors = [{ name = "fast-nvim contributors" }]
+authors = [{ name = "fast-nvim-latest contributors" }]
 keywords = ["neovim", "nvim", "editor", "binary", "wheels", "vim"]
 dynamic = ["version"]
 dependencies = []
@@ -27,12 +28,14 @@ classifiers = [
 ]
 
 [project.urls]
+# point at the repository as it exists today; GitHub redirects if it is
+# renamed to fast-nvim-latest
 Homepage = "https://github.com/nicholas/fast-nvim"
 Issues = "https://github.com/nicholas/fast-nvim/issues"
 Source = "https://github.com/nicholas/fast-nvim"
 
 [project.scripts]
-fast-nvim = "fast_nvim.cli:main"
+fast-nvim-latest = "fast_nvim_latest.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -42,8 +45,23 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.dynamic]
-version = { attr = "fast_nvim.__version__" }
+version = { attr = "fast_nvim_latest.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF"]
+ignore = [
+    # `typing.Dict`/`Optional` in signatures is fine on 3.9; rewriting every
+    # annotation to `X | None` buys nothing and upsets get_type_hints there.
+    "UP006",
+    "UP007",
+    "UP035",
+    "UP045",
+]

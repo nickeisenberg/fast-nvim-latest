@@ -1,4 +1,4 @@
-"""Allow ``python -m fast_nvim``."""
+"""Allow ``python -m fast_nvim_latest``."""
 
 from __future__ import annotations
 

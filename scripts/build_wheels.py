@@ -7,9 +7,9 @@ Usage
     python scripts/build_wheels.py --platform windows --platform macos
     python scripts/build_wheels.py --platform linux-arm64 --outdir wheelhouse
 
-The repo's own ``src/fast_nvim/_nvim`` is never touched: every platform is
+The repo's own ``src/fast_nvim_latest/_nvim`` is never touched: every platform is
 vendored into a throwaway copy of the source tree, then ``python -m build``
-(or ``pip wheel``) runs there with ``FAST_NVIM_PLAT_TAG`` set.
+(or ``pip wheel``) runs there with ``FAST_NVIM_LATEST_PLAT_TAG`` set.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from typing import List, Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim.platforms import TARGETS, TARGET_KEYS, Target, parse_target  # noqa: E402
+from fast_nvim_latest.platforms import TARGET_KEYS, TARGETS, Target, parse_target  # noqa: E402
 
 IGNORE = shutil.ignore_patterns(
     "_nvim",
@@ -71,9 +71,14 @@ def build_command(outdir: Path) -> List[str]:
         ]
 
 
+def _wheel_files(outdir: Path) -> set:
+    return {path for path in outdir.glob("*.whl")}
+
+
 def build_one(target: Target, outdir: Path, offline: bool) -> Optional[Path]:
-    with tempfile.TemporaryDirectory(prefix="fast-nvim-build-") as tmp:
-        work = Path(tmp) / "fast-nvim"
+    before = _wheel_files(outdir)
+    with tempfile.TemporaryDirectory(prefix="fast-nvim-latest-build-") as tmp:
+        work = Path(tmp) / "fast-nvim-latest"
         shutil.copytree(ROOT, work, ignore=IGNORE, symlinks=True)
 
         fetch = [
@@ -82,34 +87,37 @@ def build_one(target: Target, outdir: Path, offline: bool) -> Optional[Path]:
             "--platform",
             target.key,
             "--dest",
-            str(work / "src" / "fast_nvim" / "_nvim"),
+            str(work / "src" / "fast_nvim_latest" / "_nvim"),
         ]
         if offline:
             fetch.append("--offline")
         subprocess.run(fetch, check=True, cwd=str(work))
 
         env = dict(os.environ)
-        env["FAST_NVIM_PLAT_TAG"] = target.wheel_tag
+        env["FAST_NVIM_LATEST_PLAT_TAG"] = target.wheel_tag
         env.setdefault("PYTHONUNBUFFERED", "1")
         subprocess.run(build_command(outdir), check=True, cwd=str(work), env=env)
 
-    built = sorted(outdir.glob("fast_nvim-*-{}.whl".format(target.wheel_tag)))
-    return built[-1] if built else None
+    suffix = f"-{target.wheel_tag}.whl"
+    # only the wheel this run produced: a stale one in dist/ may sort higher
+    produced = sorted(path for path in _wheel_files(outdir) - before if path.name.endswith(suffix))
+    if produced:
+        return produced[0]
+    # the build overwrote an existing file of the same name
+    candidates = sorted(
+        (path for path in _wheel_files(outdir) if path.name.endswith(suffix)),
+        key=lambda path: path.stat().st_mtime,
+    )
+    return candidates[-1] if candidates else None
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", action="append", default=[], metavar="PLATFORM")
-    parser.add_argument(
-        "--all", action="store_true", help="build every supported platform"
-    )
+    parser.add_argument("--all", action="store_true", help="build every supported platform")
     parser.add_argument("--arch", help="x86_64/amd64 or arm64/aarch64")
-    parser.add_argument(
-        "--outdir", default=str(ROOT / "dist"), help="where wheels land"
-    )
-    parser.add_argument(
-        "--offline", action="store_true", help="use cached archives only"
-    )
+    parser.add_argument("--outdir", default=str(ROOT / "dist"), help="where wheels land")
+    parser.add_argument("--offline", action="store_true", help="use cached archives only")
     args = parser.parse_args(argv)
 
     if args.all:
@@ -124,19 +132,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     wheels = []
     for target in targets:
-        print("==> {} ({})".format(target.key, target.wheel_tag), flush=True)
+        print(f"==> {target.key} ({target.wheel_tag})", flush=True)
         wheel = build_one(target, outdir, args.offline)
         if wheel is None:
-            print(
-                "    failed to build a wheel for {}".format(target.key), file=sys.stderr
-            )
+            print(f"    failed to build a wheel for {target.key}", file=sys.stderr)
             return 1
         wheels.append(wheel)
-        print("    {}".format(wheel.name), flush=True)
+        print(f"    {wheel.name}", flush=True)
 
-    print("\n{} wheel(s) in {}:".format(len(wheels), outdir))
+    print(f"\n{len(wheels)} wheel(s) in {outdir}:")
     for wheel in wheels:
-        print("  {:<58} {:>7.1f} MB".format(wheel.name, wheel.stat().st_size / 1e6))
+        print(f"  {wheel.name:<58} {wheel.stat().st_size / 1e6:>7.1f} MB")
     return 0
 
 

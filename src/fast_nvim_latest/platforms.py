@@ -1,16 +1,18 @@
 """Known Neovim release targets (platform + architecture) and asset metadata.
 
 A *target* is one downloadable Neovim build, e.g. ``linux-x86_64``.  The
-``key`` is what users type on the command line (``fast-nvim setup linux``)
+``key`` is what users type on the command line (``fast-nvim-latest setup linux``)
 and what names the vendored directory inside the wheel.
 """
 
 from __future__ import annotations
 
+import os
 import platform
+import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 #: Neovim release that is vendored / downloaded by default.
 NVIM_VERSION = "v0.12.6"
@@ -33,16 +35,11 @@ class Target:
 
     @property
     def url(self) -> str:
-        return "{}/{}/{}".format(RELEASES_URL, NVIM_VERSION, self.asset)
-
-    @property
-    def is_host(self) -> bool:
-        host = host_target()
-        return (self.key == host.key) if host else False
+        return f"{RELEASES_URL}/{NVIM_VERSION}/{self.asset}"
 
     @property
     def human(self) -> str:
-        return "{} ({}, {})".format(self.key, self.family, self.arch)
+        return f"{self.key} ({self.family}, {self.arch})"
 
 
 TARGETS: Dict[str, Target] = {
@@ -186,19 +183,96 @@ def _host_family() -> Optional[str]:
     return None
 
 
-def _host_arch() -> str:
-    machine = (platform.machine() or "").lower()
-    if machine in ("arm64", "aarch64", "armv8l"):
+def _host_arch() -> Optional[str]:
+    """The Neovim architecture matching this machine, if there is one.
+
+    Returning ``None`` for anything else matters: guessing ``x86_64`` would
+    install a binary that cannot run and only fail at the very end.
+    """
+    machine = (platform.machine() or "").strip().lower()
+    if machine in ("arm64", "aarch64"):
         return "arm64"
-    return "x86_64"
+    if machine in ("x86_64", "x86-64", "amd64", "em64t"):
+        return "x86_64"
+    return None
 
 
 def host_target() -> Optional[Target]:
     """The Neovim build that runs on the machine we are on, if we know it."""
     family = _host_family()
-    if family is None:
+    arch = _host_arch()
+    if family is None or arch is None:
         return None
-    return TARGETS.get("{}-{}".format(family, _host_arch()))
+    return TARGETS.get(f"{family}-{arch}")
+
+
+# --------------------------------------------------------------------------
+# emulated interpreters (Rosetta 2, Windows on ARM)
+# --------------------------------------------------------------------------
+_ROSETTA: Dict[str, bool] = {}
+
+
+def _rosetta_active() -> bool:
+    """True if this process is translated by Rosetta 2 on Apple silicon."""
+    if "value" in _ROSETTA:
+        return _ROSETTA["value"]
+    active = False
+    try:
+        result = subprocess.run(
+            ["sysctl", "-in", "sysctl.proc_translated"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        active = result.returncode == 0 and result.stdout.strip() == "1"
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - no sysctl
+        active = False
+    _ROSETTA["value"] = active
+    return active
+
+
+def emulation() -> Optional[Tuple[str, str]]:
+    """``(arch this Python runs as, arch the machine really is)`` when they differ.
+
+    pip picks the wheel from the *running* interpreter's tag, so we must
+    install the matching build—an ``x86_64`` Python on an arm64 Mac gets the
+    Intel build, and it works, under Rosetta.  That is correct but slow and
+    easy to miss, so callers warn about it instead of trying to be clever.
+    """
+    family = _host_family()
+    machine = (platform.machine() or "").strip().lower()
+    if family == "macos" and _rosetta_active():
+        if machine in ("x86_64", "x86-64", "amd64", "em64t"):
+            return "x86_64", "arm64"
+        return None
+    if family == "windows":
+        # an x64 process on ARM64 Windows reports AMD64 + PROCESSOR_ARCHITEW6432
+        outer = (os.environ.get("PROCESSOR_ARCHITEW6432") or "").strip().upper()
+        if outer == "ARM64" and machine in ("amd64", "x86_64", "x86-64", "em64t"):
+            return "x86_64", "arm64"
+    return None
+
+
+def emulation_note() -> Optional[str]:
+    """A one-line hint for emulated interpreters, or ``None``."""
+    found = emulation()
+    if found is None:
+        return None
+    running, native = found
+    if _host_family() == "macos":
+        hint = (
+            "install fast-nvim-latest from a native arm64 Python (python.org "
+            "universal2 or arm64 Homebrew) to get the arm64 build"
+        )
+        how = "Rosetta 2"
+    else:
+        hint = "install fast-nvim-latest from an arm64 Python to get the arm64 build"
+        how = "emulation"
+    return (
+        f"this Python runs as {running} on {native} hardware ({how}), so the "
+        f"{running} Neovim build is installed instead of the native {native} one "
+        f"(works, but slower); {hint}"
+    )
 
 
 def _default_arch(family: str) -> str:
@@ -225,9 +299,7 @@ def parse_target(spec: Optional[str] = None, arch: Optional[str] = None) -> Targ
                 )
             )
         if arch and normalize_arch(arch) != target.arch:
-            replace_target = TARGETS.get(
-                "{}-{}".format(target.family, normalize_arch(arch))
-            )
+            replace_target = TARGETS.get(f"{target.family}-{normalize_arch(arch)}")
             if replace_target is None:
                 raise ValueError("no Neovim build for that platform/arch")
             return replace_target
@@ -254,26 +326,20 @@ def parse_target(spec: Optional[str] = None, arch: Optional[str] = None) -> Targ
     if arch:
         explicit = normalize_arch(arch)
         if requested_arch and requested_arch != explicit:
-            raise ValueError(
-                "conflicting architectures: {!r} vs --arch {!r}".format(spec, arch)
-            )
+            raise ValueError(f"conflicting architectures: {spec!r} vs --arch {arch!r}")
         requested_arch = explicit
 
     if requested_arch is None:
         host = host_target()
-        candidate_arch = (
-            host.arch if host and host.family == family else _default_arch(family)
-        )
-        if "{}-{}".format(family, candidate_arch) not in TARGETS:
+        candidate_arch = host.arch if host and host.family == family else _default_arch(family)
+        if f"{family}-{candidate_arch}" not in TARGETS:
             candidate_arch = _default_arch(family)
     else:
         candidate_arch = requested_arch
 
-    target = TARGETS.get("{}-{}".format(family, candidate_arch))
+    target = TARGETS.get(f"{family}-{candidate_arch}")
     if target is None:
         raise ValueError(
-            "no Neovim build for that platform; available: {}".format(
-                ", ".join(TARGET_KEYS)
-            )
+            "no Neovim build for that platform; available: {}".format(", ".join(TARGET_KEYS))
         )
     return target
