@@ -59,6 +59,9 @@ never disagree:
 | Windows on ARM | arm64 Python | `win_arm64` |
 | Alpine/musl, glibc < 2.34, macOS < 11, armv7 | any | no wheel (pip: "no matching distribution") |
 
+(Neovim's official Linux builds need glibc ≥ 2.34, hence `manylinux_2_34`;
+musl systems such as Alpine are not covered by them.)
+
 If the interpreter is emulated (Rosetta 2, or an x64 Python on ARM64 Windows)
 `setup` says so — the build is the *right* one for that interpreter, just not
 the native one. `fast-nvim-latest version` shows it too
@@ -114,34 +117,6 @@ one build before building (`python scripts/fetch_nvim.py --platform linux
 Note that the wheel tag will still only match one platform, so only do that for
 private/offline distributions (`scripts/check_wheels.py` accepts the extra
 bundles but still requires the tagged platform's build to be present).
-
-## The runtime has to come along
-
-A bare `nvim` binary is not usable: Neovim resolves `$VIMRUNTIME` relative to
-its own executable (`../share/nvim/runtime`). Without it you get
-`E484: Can't open file /usr/local/share/nvim/syntax/syntax.vim`.
-
-So the wheel ships the whole runnable tree, which is what
-`fast-nvim-latest setup` installs:
-
-```
-fast_nvim_latest/_nvim/<platform>/bin/nvim          the binary (plus DLLs on Windows)
-fast_nvim_latest/_nvim/<platform>/lib/nvim/parser/  tree-sitter parsers
-fast_nvim_latest/_nvim/<platform>/share/nvim/runtime/  ~27 MiB of Lua/Vim runtime
-fast_nvim_latest/_nvim/LICENSE.nvim.txt             Neovim's license (tracked in git)
-fast_nvim_latest/_nvim/BUILD_INFO.json              what was vendored, with sha256
-```
-
-Only `bin/`, `lib/nvim/` and `share/nvim/runtime/` are vendored; desktop
-files, icons and the man page are dropped.
-
-Two details worth knowing:
-
-* Wheels are zip files and pip does not always restore the executable bit, so
-  fast-nvim-latest `chmod +x`es the binary before using it (and again on `setup`).
-* The Linux builds from Neovim require **glibc >= 2.34**, hence the
-  `manylinux_2_34` tag. musl systems (Alpine) are not supported by Neovim's
-  official builds.
 
 ## Development
 
