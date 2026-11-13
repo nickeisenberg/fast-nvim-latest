@@ -317,7 +317,7 @@ def fetch_archive(
 
 
 # --------------------------------------------------------------------------
-# archives -> neonvim tree
+# archives -> Neovim tree
 # --------------------------------------------------------------------------
 def _keep(relative: str) -> bool:
     """True for the archive directories :data:`BUNDLE_PARTS` asks for.

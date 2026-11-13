@@ -116,9 +116,30 @@ Platforms can be spelled loosely: `linux`, `mac`, `macos`, `osx`, `darwin`,
 `win`, `windows`, `win64`, `linux-arm64`, `windows/amd64`, `macos-x86_64`.
 The machine you are on is the default.
 
-Everything after `fast-nvim-release run` goes to Neovim untouched:
-`fast-nvim-release run -- -u NONE --headless "+q"`, or
+`run` takes an optional release and then hands everything else to Neovim
+verbatim, flags included (put `--` after the release if a Neovim argument could
+be mistaken for one): `fast-nvim-release run -- -u NONE --headless "+q"`, or
 `fast-nvim-release run 0.10 -- --version`.
+
+### Scripting
+
+`version --json` and `path --json` print one object, sorted by key, on stdout:
+
+```console
+$ fast-nvim-release version --json | jq -r .nvim_version
+v0.12.6
+$ fast-nvim-release path --json | jq -r .exe
+/home/you/.local/bin/nvim
+```
+
+`version` reports `fast_nvim_release`, `default_release`, `release`,
+`nvim_version`, `target`, `bundled`, `python`, `python_arch`, `emulated`,
+`cache`, `prefix`, `installed` (`[release, platform]` pairs), `releases` (per
+line: `nvim_version`, `platforms`, `bundled`) and `vendored_targets`
+(`"<release>/<platform>"` labels). `path` reports `release`, `nvim_version`,
+`target`, `prefix`, `exe`, `installed`, `managed`, `bundled`, `bundle` and
+`installed_releases`. `path --installed-only` exits 1 unless `installed` is
+true, which is the check to use in a script.
 
 ## Contributing
 
