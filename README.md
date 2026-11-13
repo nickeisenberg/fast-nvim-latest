@@ -2,6 +2,8 @@
 
 Get the last three minor releases of nvim in under 5 seconds. Works on Linux
 (x86_64, arm64), macOS (Intel, Apple silicon) and Windows (x86_64, arm64).
+It is meant for CI, machines without root, and fresh servers, containers and
+HPC clusters: anywhere pip already works but a package manager does not.
 
 ```console
 $ time bash -c 'python -m venv ~/get-nvim && \
@@ -25,6 +27,61 @@ installed Neovim v0.12.6 into /home/you/nvim
 $ ~/nvim/bin/nvim --version | head -1
 NVIM v0.12.6
 ```
+
+## Who this is for
+
+Not the everyday desktop user who installs Neovim once (see
+[Other ways to get Neovim](#other-ways-to-get-neovim)). It is for places where
+pip is already there and only PyPI is reachable. Nothing is downloaded at
+`setup` or `run` time: the binaries are inside the wheel.
+
+**CI: testing a plugin against several Neovim versions.** It was built for the
+CI of [iron.nvim](https://github.com/Vigemus/iron.nvim). The test command below is only an example; use your plugin's
+own.
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        nvim: ["0.10", "0.11", "0.12"]  # quoted, or YAML reads 0.10 as 0.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install fast-nvim-release
+      - run: fast-nvim-release run ${{ matrix.nvim }} --headless -c "PlenaryBustedDirectory tests"
+```
+
+Nothing here is specific to GitHub Actions: the same two commands work in
+GitLab CI, Jenkins or a Docker build, wherever there is a Python.
+
+**No root or sudo.** Install for your user (or in a venv, if your system pip
+refuses `--user`) and put Neovim in `~/.local/bin`:
+
+```console
+$ pip install --user fast-nvim-release
+$ fast-nvim-release setup --prefix ~/.local
+```
+
+**Fresh servers and containers.** One line, and nothing outside your home is
+touched:
+
+```console
+$ python3 -m venv ~/.venvs/nvim && ~/.venvs/nvim/bin/pip install -q fast-nvim-release && ~/.venvs/nvim/bin/fast-nvim-release setup --prefix ~/.local
+```
+
+**Older Linux and HPC clusters.** The same commands work on RHEL 8 and similar
+systems; pip picks the [glibc 2.17 wheel](#older-linux-rhel-8-centos-7-hpc-clusters)
+by itself. It needs Python 3.9 or newer: on RHEL 8 the default `python3` is
+3.6, so use `python3.9` (the `python39` package) or a module your site provides.
+
+**Restricted networks.** Only PyPI, or an internal PyPI mirror, is needed,
+never GitHub: `pip install --index-url https://pypi.example.internal/simple
+fast-nvim-release`. For machines with no network at all, see
+[Installing for other machines](#installing-for-other-machines).
 
 ## Supported releases
 
@@ -127,6 +184,27 @@ On each machine, `pip install --no-index --find-links wheels/ fast-nvim-release`
 picks the matching wheel. pip checks each file against the hash PyPI recorded.
 Without Python on the target, unzip the wheel: `fast_nvim_release/_nvim/<release>/<platform>/`
 inside it is a complete Neovim tree.
+
+## Other ways to get Neovim
+
+There are good, widely used ways to install Neovim, and on your own desktop a
+package manager or bob is usually the better choice: they keep Neovim up to
+date, and bob also handles nightly builds. fast-nvim-release is aimed at CI,
+non-root and throwaway environments, where pip is already present and only
+PyPI is reachable.
+
+| Option | Root needed | Downloads from | Several versions side by side | Good fit |
+| --- | --- | --- | --- | --- |
+| OS package manager (apt, dnf, Homebrew, winget, scoop, ...) | for apt/dnf, yes | your distribution's or the tool's repositories | usually no | your own machine |
+| [bob](https://github.com/MordechaiHadad/bob) | no | GitHub | yes, including nightly | your own machine, switching versions |
+| Official tarball / AppImage | no | GitHub releases | by hand | any machine with GitHub access |
+| mise / asdf | no | usually GitHub releases | yes | if you already manage tools with them |
+| Neovim setup actions for GitHub Actions | no | usually GitHub releases | per job | GitHub Actions only |
+| fast-nvim-release | no | PyPI or a PyPI mirror | yes (0.10, 0.11, 0.12) | CI, no root, fresh servers, restricted networks |
+
+Use something else when you want nightly or a release older than 0.10, when
+your platform has no wheel (see [Supported releases](#supported-releases)), or
+when you want updates to arrive with the rest of your system.
 
 ## Contributing
 
