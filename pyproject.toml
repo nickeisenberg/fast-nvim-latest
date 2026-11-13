@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fast-nvim-release"
-description = "Neovim releases, shipped in a pip wheel: one install, one setup command."
+description = "Neovim from PyPI: pip install \"fast-nvim-release==0.12.*\", then one setup command."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -41,9 +41,6 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.dynamic]
-version = { attr = "fast_nvim_release.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

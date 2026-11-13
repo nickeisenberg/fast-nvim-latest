@@ -1,10 +1,11 @@
-"""Find the Neovim builds inside the wheel and install one into a prefix.
+"""Find the Neovim build inside the wheel and install it into a prefix.
 
-The wheel carries one complete Neovim tree per release for its platform::
+Each wheel carries one complete Neovim tree, for one line and one platform::
 
-    fast_nvim_release/_nvim/0.12/linux-x86_64/bin/nvim
-    fast_nvim_release/_nvim/0.12/linux-x86_64/lib/nvim/...
-    fast_nvim_release/_nvim/0.12/linux-x86_64/share/nvim/runtime/...
+    fast_nvim_release/_nvim/bin/nvim
+    fast_nvim_release/_nvim/lib/nvim/...
+    fast_nvim_release/_nvim/share/nvim/runtime/...
+    fast_nvim_release/_nvim/build.json        which build this is
 
 Neovim finds its runtime relative to its own executable
 (``../share/nvim/runtime``), so ``setup`` copies the tree into the prefix with
@@ -20,7 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List, Set, Union
 
-from .platforms import RELEASES, Platform
+from .platforms import PLATFORMS, Platform, host_platform
 
 BUNDLE_ROOT = Path(__file__).resolve().parent / "_nvim"
 
@@ -28,7 +29,7 @@ BUNDLE_ROOT = Path(__file__).resolve().parent / "_nvim"
 PARTS = ("bin", "lib/nvim", "share/nvim/runtime")
 
 #: ``<prefix>/share/fast-nvim-release/``: records what this tool installed.
-#: Releases before 0.3 wrote one ``<release>-<platform>.json`` here; every
+#: Releases before 0.4 wrote ``<release>-<platform>.json`` files here; every
 #: ``*.json`` in the directory is read, so those prefixes stay recognised.
 MARKER_DIR = Path("share") / "fast-nvim-release"
 MARKER = MARKER_DIR / "install.json"
@@ -39,36 +40,35 @@ class FastNvimError(RuntimeError):
 
 
 # --------------------------------------------------------------------------
-# the builds inside this wheel
+# the build inside this wheel
 # --------------------------------------------------------------------------
-def bundle_dir(release_key: str, platform: Platform) -> Path:
-    return BUNDLE_ROOT / release_key / platform.key
-
-
-def bundled_releases(platform: Platform) -> List[str]:
-    """Releases this wheel carries for ``platform``, oldest first."""
-    return [key for key in RELEASES if (bundle_dir(key, platform) / "bin" / platform.exe).is_file()]
-
-
-def bundled_version(release_key: str, platform: Platform) -> str:
-    """The Neovim version of a bundled build, e.g. ``v0.12.6``.
-
-    Read from the ``VERSION`` file ``fetch_nvim.py`` writes, because the
-    old-glibc wheels may carry an older patch than :data:`RELEASES` pins.
-    """
+def build_info() -> Dict[str, str]:
+    """``build.json``: the line, Neovim version, platform and tag of this wheel."""
     try:
-        return (bundle_dir(release_key, platform) / "VERSION").read_text(encoding="utf-8").strip()
-    except OSError:
-        return RELEASES[release_key].version
+        data = json.loads((BUNDLE_ROOT / "build.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
 
 
-def bundled_exe(release_key: str, platform: Platform) -> Path:
-    """The executable of a bundled build, or a :class:`FastNvimError` saying why not."""
-    exe = bundle_dir(release_key, platform) / "bin" / platform.exe
+def bundled_platform() -> Platform:
+    """The platform of the bundled build (this machine's, if unrecorded)."""
+    key = build_info().get("platform", "")
+    if key in PLATFORMS:
+        return PLATFORMS[key]
+    here = host_platform()
+    if here is None:
+        raise FastNvimError("there is no Neovim build for this platform")
+    return here
+
+
+def bundled_exe() -> Path:
+    """The bundled executable, or a :class:`FastNvimError` saying why there is none."""
+    exe = BUNDLE_ROOT / "bin" / bundled_platform().exe
     if not exe.is_file():
-        have = ", ".join(bundled_releases(platform)) or "none"
         raise FastNvimError(
-            f"this wheel has no Neovim {release_key} for {platform.key} (it has: {have})"
+            "this installation carries no Neovim build "
+            "(built from source without running scripts/fetch_nvim.py first?)"
         )
     return exe
 
@@ -141,28 +141,28 @@ def _copy(source: Path, dest: Path) -> None:
         shutil.copy2(source, dest, follow_symlinks=False)
 
 
-def _write_marker(
-    prefix: Path, release_key: str, platform: Platform, bin_names: Iterable[str]
-) -> None:
+def _write_marker(prefix: Path, bin_names: Iterable[str]) -> None:
     marker = prefix / MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
+    info = build_info()
     data = {
-        "release": release_key,
-        "nvim_version": bundled_version(release_key, platform),
-        "platform": platform.key,
+        "line": info.get("line"),
+        "nvim_version": info.get("neovim"),
+        "platform": bundled_platform().key,
         "bin": sorted(bin_names),
     }
     marker.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def install(release_key: str, platform: Platform, prefix: Path, *, force: bool = False) -> Path:
-    """Copy a bundled build into ``prefix`` and return the installed executable.
+def install(prefix: Path, *, force: bool = False) -> Path:
+    """Copy the bundled build into ``prefix`` and return the installed executable.
 
     A prefix holds one Neovim: installing into a prefix this tool already
     manages replaces the previous build, including the ``bin`` entries it
     owned.  Anything else is never overwritten without ``force``.
     """
-    source = bundled_exe(release_key, platform).parent.parent
+    exe = bundled_exe()
+    source = exe.parent.parent
     prefix = normalize(prefix)
     names = sorted(entry.name for entry in (source / "bin").iterdir())
     owned = _owned_bin_names(prefix)
@@ -188,7 +188,7 @@ def install(release_key: str, platform: Platform, prefix: Path, *, force: bool =
             )
 
     # claim everything first, so an interrupted install can be re-run without --force
-    _write_marker(prefix, release_key, platform, owned | set(names))
+    _write_marker(prefix, owned | set(names))
     for part in PARTS[1:]:
         _remove(prefix / part)
         if (source / part).is_dir():
@@ -200,11 +200,11 @@ def install(release_key: str, platform: Platform, prefix: Path, *, force: bool =
     for name in names:
         _copy(source / "bin" / name, prefix / "bin" / name)
 
-    _write_marker(prefix, release_key, platform, names)
-    for old in (prefix / MARKER_DIR).glob("*.json"):  # markers from before 0.3
+    _write_marker(prefix, names)
+    for old in (prefix / MARKER_DIR).glob("*.json"):  # markers from before 0.4
         if old.name != MARKER.name:
             old.unlink()
-    return prefix / "bin" / platform.exe
+    return prefix / "bin" / exe.name
 
 
 #: ``-i NONE`` keeps Neovim from reading and rewriting the user's shada file.

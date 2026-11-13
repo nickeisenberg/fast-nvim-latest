@@ -1,17 +1,18 @@
-"""Build hook: tag the wheel with the platform of the vendored Neovim builds.
+"""Build hook: version and tag the wheel from the Neovim build it carries.
 
-A wheel can only carry one platform's binaries, so every release publishes one
-wheel per platform (like ``ruff`` and ``uv``).  The tag comes from
-``FAST_NVIM_RELEASE_PLAT_TAG`` (``scripts/build_wheels.py`` sets it) or else
-from the build machine; ``scripts/check_wheels.py`` verifies it against the
-binaries inside.
+``scripts/fetch_nvim.py`` unpacks one Neovim build into
+``src/fast_nvim_release/_nvim/`` and records it in ``_nvim/build.json``: the
+package version (``<line>.<k>``, e.g. ``0.12.3``) and the wheel's platform tag.
+This file reads both from there, so ``fetch_nvim.py`` then ``pip install .``
+(or ``python -m build``) always produces a consistent wheel.
+``scripts/check_wheels.py`` verifies the result against ``lines.json``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
-import sys
 from pathlib import Path
 
 from setuptools import setup
@@ -23,12 +24,14 @@ try:  # setuptools >= 70.1 ships the command itself
 except ImportError:  # pragma: no cover - older toolchains
     from wheel.bdist_wheel import bdist_wheel
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "src"))
+BUILD_JSON = Path(__file__).resolve().parent / "src" / "fast_nvim_release" / "_nvim" / "build.json"
 
-from fast_nvim_release.platforms import host_wheel_tag  # noqa: E402
 
-BUNDLE_ROOT = ROOT / "src" / "fast_nvim_release" / "_nvim"
+def build_info() -> dict:
+    try:
+        return json.loads(BUILD_JSON.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 class BinaryDistribution(Distribution):
@@ -40,16 +43,11 @@ class BinaryDistribution(Distribution):
 
 class PlatformWheel(bdist_wheel):
     def get_tag(self):
-        tag = os.environ.get("FAST_NVIM_RELEASE_PLAT_TAG", "").strip()
-        if not tag:  # the wheel pip would pick here, old-glibc Linux included
-            tag = host_wheel_tag()
-            if tag is None:
-                raise SystemExit("unknown build platform; set FAST_NVIM_RELEASE_PLAT_TAG")
-        return "py3", "none", tag
+        return "py3", "none", build_info().get("tag") or "unknown"
 
     def run(self):
-        if not any(BUNDLE_ROOT.glob("*/*/bin/nvim*")):
-            raise SystemExit(f"no Neovim in {BUNDLE_ROOT}; run scripts/fetch_nvim.py first")
+        if not build_info():
+            raise SystemExit(f"no Neovim build in {BUILD_JSON.parent}; run scripts/fetch_nvim.py")
         super().run()
 
 
@@ -64,6 +62,8 @@ class SourceDist(sdist):
 
 
 setup(
+    # without a fetched build the version is a placeholder; building a wheel then stops
+    version=build_info().get("version") or "0+unvendored",
     cmdclass={"bdist_wheel": PlatformWheel, "sdist": SourceDist},
     distclass=BinaryDistribution,
 )

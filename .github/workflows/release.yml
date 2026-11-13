@@ -1,36 +1,37 @@
 name: release
 
-# Six wheels, validated, then uploaded — but only for a `v*` tag or a manual
-# run. Publishing is irreversible (PyPI refuses an existing version), so this
-# is deliberately separate from ci.yml and gated twice: by the trigger and by
-# the version check.
+# Started by hand only (Actions > release > Run workflow). It publishes every
+# version in lines.json that the chosen index does not have yet, so a release
+# carries exactly the lines whose `k` was bumped. Publishing is irreversible
+# (an index never takes the same version twice); rehearse on TestPyPI first.
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      publish:
-        description: "Also upload the wheels to TestPyPI"
-        type: boolean
-        default: false
+      index:
+        description: "Where to publish"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
 
 permissions:
   contents: read
 
 # a release must never be cancelled half way through a publish
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 env:
-  # archives are ~12 MB each and the pin changes rarely; see the cache step
   NVIM_CACHE: ~/.cache/fast-nvim-release
+  INDEX_URL: ${{ inputs.index == 'pypi' && 'https://pypi.org' || 'https://test.pypi.org' }}
 
 jobs:
   build:
-    name: build all platform wheels
+    name: build the unpublished versions
     runs-on: ubuntu-latest
+    outputs:
+      built: ${{ steps.build.outputs.built }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -48,31 +49,35 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.NVIM_CACHE }}
-          key: nvim-linux-${{ runner.arch }}-${{ hashFiles('src/fast_nvim_release/platforms.py') }}
-      - name: build one wheel per platform
-        run: python scripts/build_wheels.py --all
+          key: nvim-release-${{ hashFiles('lines.json') }}
+      - name: build every version the index does not have
+        id: build
+        run: |
+          python scripts/build_wheels.py --all --skip-published "$INDEX_URL"
+          if ls dist/*.whl >/dev/null 2>&1; then echo "built=true" >> "$GITHUB_OUTPUT"; else echo "built=false" >> "$GITHUB_OUTPUT"; fi
       - name: validate metadata, payloads and tags
+        if: steps.build.outputs.built == 'true'
         run: |
           python -m twine check dist/*
           python scripts/check_wheels.py
-      - name: install the linux wheel in a clean venv and use it
-        run: |
-          python scripts/smoke_test.py
-          python scripts/smoke_test.py dist/*-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - name: install the Linux x86_64 wheels in a clean venv and use them
+        if: steps.build.outputs.built == 'true'
+        run: python scripts/smoke_test.py dist/*-manylinux_2_34_x86_64.whl dist/*-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.build.outputs.built == 'true'
         with:
           name: wheels
           path: dist/*.whl
           retention-days: 14
 
-  publish-testpypi:
-    name: publish to TestPyPI
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+  publish:
+    name: publish to ${{ inputs.index }}
     needs: build
+    if: needs.build.outputs.built == 'true'
     runs-on: ubuntu-latest
     environment:
-      name: testpypi
-      url: https://test.pypi.org/p/fast-nvim-release
+      name: ${{ inputs.index }}
+      url: ${{ inputs.index == 'pypi' && 'https://pypi.org/p/fast-nvim-release' || 'https://test.pypi.org/p/fast-nvim-release' }}
     permissions:
       id-token: write
       contents: read
@@ -88,49 +93,32 @@ jobs:
         with:
           name: wheels
           path: dist
-      # a rehearsal is worthless if it skips the gate the real upload runs
       - name: validate the wheels before uploading
         run: python scripts/check_wheels.py dist/*.whl
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
-          repository-url: https://test.pypi.org/legacy/
+          repository-url: ${{ inputs.index == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
           packages-dir: dist
           attestations: true
 
-  publish-pypi:
-    name: publish to PyPI
-    # a push of the tag, not a manual run that happens to target one: the
-    # rehearsal (workflow_dispatch) must never reach the real index
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: build
+  github-release:
+    name: tag and describe the release
+    needs: publish
+    # rehearsals on TestPyPI leave no tags behind
+    if: inputs.index == 'pypi'
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/fast-nvim-release
     permissions:
-      id-token: write
-      contents: read
-      attestations: write
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - name: check that the tag matches __version__
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          version=$(python -c "import sys; sys.path.insert(0, 'src'); import fast_nvim_release; print(fast_nvim_release.__version__)")
-          echo "tag=$tag version=$version"
-          test "$tag" = "$version"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: wheels
           path: dist
-      - name: validate the wheels and the tag
-        run: python scripts/check_wheels.py --expect-version "${GITHUB_REF_NAME#v}" dist/*.whl
-      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
-        with:
-          packages-dir: dist
-          attestations: true
+      - name: one GitHub release per published version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/release_notes.py dist/*.whl

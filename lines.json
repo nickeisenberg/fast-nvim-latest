@@ -1,0 +1,65 @@
+{
+  "0.10": {
+    "k": 1,
+    "official": {
+      "version": "v0.10.4",
+      "sha256": {
+        "linux-x86_64": "95aaa8e89473f5421114f2787c13ae0ec6e11ebbd1a13a1bd6fcf63420f8073f",
+        "macos-x86_64": "c1405071127b59dbdefc31d9c52e9a5c36db67dcef6dcf83e898aada1f3f778e",
+        "macos-arm64": "3d7b07ec9b491d2a3d55167bc1db1cfa96773a1a37e74ea384cb15ab0189223b",
+        "windows-x86_64": "dceeb8301f64e244e3e2dffaedbb153bd01c0c6ecb5024a90e3172dc8e65555c"
+      },
+      "skip": {
+        "linux-arm64": "needs glibc 2.38, above the manylinux_2_34 tag of the other Linux builds"
+      }
+    },
+    "old_glibc": {
+      "version": "v0.10.4",
+      "sha256": {
+        "linux-x86_64": "879c0886f47f026d519dcd7e398d7e0f060c944adf791f58539592f0346aa851"
+      },
+      "note": "neovim-releases published no checksum for v0.10.4; pinned from two matching downloads"
+    }
+  },
+  "0.11": {
+    "k": 1,
+    "official": {
+      "version": "v0.11.7",
+      "sha256": {
+        "linux-x86_64": "38a7c6317f94503841096c00e8fde05ef04b9472fc9d7d62b6e033cecd6f7991",
+        "linux-arm64": "99bb3c53604e83ce18fc0b459e34cf1a5e212f4e5fbe2eb136b3c18092ae9905",
+        "macos-x86_64": "014649c0c75e188fd70d40f787ee7cb83e7c2926264cd4e72c300d0198922371",
+        "macos-arm64": "9c84686ce84bbab725ff3d88ca3ac1d6da5a72128b68d9dd8094e34d4049a126",
+        "windows-x86_64": "7b10e6e08b14bf256422b72cfe706ef0452fd9c0a40e138426e1af09803d697f",
+        "windows-arm64": "8e4fff5c06eee1b1bb6dead9be74da5f7c59b540c3f90409bd17b85971c03b5d"
+      }
+    },
+    "old_glibc": {
+      "version": "v0.11.7",
+      "sha256": {
+        "linux-x86_64": "26606949c3688c2c66bc8c1ba6faaa375edbb48091d3b2cd9c9d8b35fb0a478f"
+      }
+    }
+  },
+  "0.12": {
+    "k": 1,
+    "official": {
+      "version": "v0.12.6",
+      "sha256": {
+        "linux-x86_64": "474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87",
+        "linux-arm64": "8f1f64a0bdb97247034038c3823c6cbad5bdf9ecd5751b85494b71c3ee04c815",
+        "macos-x86_64": "481424f1dbc85f637d57e47d27d042aa9c883e5a4fe9ee64fc4ee9573b221998",
+        "macos-arm64": "1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b",
+        "windows-x86_64": "4e12b7103b601ffc8f25954b4da100f339faa73dccb69a5b135e897fa3d893ed",
+        "windows-arm64": "2e58d259ffcc6145e5112ea02330126c6b57da09087bb9265fb2fa9aa10b485c"
+      }
+    },
+    "old_glibc": {
+      "version": "v0.12.5",
+      "sha256": {
+        "linux-x86_64": "9e4a0e9c2aebbcf1eb5f6cdf645b460c9249f517650d0191170f9f152ecfd721",
+        "linux-arm64": "b59063930b3ec62aed6257a4a388d33939c2d8804cce5723836659f7feef876c"
+      }
+    }
+  }
+}

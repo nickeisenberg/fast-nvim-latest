@@ -1,38 +1,37 @@
 # fast-nvim-release
 
-[![PyPI](https://img.shields.io/pypi/v/fast-nvim-release)](https://pypi.org/project/fast-nvim-release/)
-
-Neovim 0.10, 0.11 and 0.12 from PyPI, in seconds, without root. Works on Linux
-(x86_64, arm64, including RHEL 8-era systems), macOS (Intel, Apple silicon) and
-Windows (x86_64, arm64). It is meant for CI, machines without root, and fresh
-servers, containers and HPC clusters: anywhere pip already works but a package
-manager does not.
+Neovim from PyPI, in seconds, without root. Works on Linux (x86_64, arm64,
+including RHEL 8-era systems), macOS (Intel, Apple silicon) and Windows
+(x86_64, arm64). It is meant for CI, machines without root, and fresh servers,
+containers and HPC clusters: anywhere pip already works but a package manager
+does not.
 
 ```console
-$ time uvx fast-nvim-release setup 0.12 --prefix ~/.local
+$ uvx fast-nvim-release setup --prefix ~/.local
 installed Neovim v0.12.6 into /home/you/.local
   /home/you/.local/bin/nvim
-
-real    0m2.540s
 ```
 
-That is from a cold start, downloading included. `setup` itself takes about
-0.2 seconds; the rest is fetching the wheel (25–36 MB) from PyPI. With plain
-pip, creating a new venv first, the whole thing takes about 5 seconds.
+`setup` itself takes about 0.2 seconds; the rest is pip fetching one ~11 MB
+wheel from PyPI.
 
 ## Quickstart
 
+Each package version carries one Neovim line. Pick the line with pip:
+
 ```console
-$ pip install fast-nvim-release      # or: pipx install / uv tool install fast-nvim-release
-$ fast-nvim-release setup 0.12 --prefix ~/nvim
-installed Neovim v0.12.6 into /home/you/nvim
-  /home/you/nvim/bin/nvim
-$ ~/nvim/bin/nvim --version | head -1
-NVIM v0.12.6
+$ pip install fast-nvim-release              # the newest line (0.12)
+$ pip install "fast-nvim-release==0.11.*"    # the 0.11 line
+$ fast-nvim-release setup --prefix ~/.local
+installed Neovim v0.11.7 into /home/you/.local
+  /home/you/.local/bin/nvim
 ```
 
-Or in one command, without installing the tool itself:
-`uvx fast-nvim-release setup 0.12 --prefix ~/.local`.
+`pipx install` and `uv tool install` work the same way. With uvx, in one
+command: `uvx --from "fast-nvim-release==0.11.*" fast-nvim-release setup --prefix ~/.local`.
+
+Always pin a line (`==0.11.*`), not an exact version: the line pin follows that
+line's newest release, which is what you want.
 
 ## Who this is for
 
@@ -57,12 +56,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install fast-nvim-release
-      - run: fast-nvim-release run ${{ matrix.nvim }} --headless -c "PlenaryBustedDirectory tests"
+      - run: pip install "fast-nvim-release==${{ matrix.nvim }}.*"
+      - run: fast-nvim-release run --headless -c "PlenaryBustedDirectory tests"
 ```
 
-Nothing here is specific to GitHub Actions: the same two commands work in
-GitLab CI, Jenkins or a Docker build, wherever there is a Python.
+Nothing here is specific to GitHub Actions: the same commands work in GitLab
+CI, Jenkins or a Docker build, wherever there is a Python.
 
 **No root or sudo.** Install for your user (or with pipx/uv, or in a venv, if
 your system pip refuses `--user`) and put Neovim in `~/.local/bin`:
@@ -73,13 +72,7 @@ $ fast-nvim-release setup --prefix ~/.local
 ```
 
 **Fresh servers and containers.** One line, and nothing outside your home is
-touched:
-
-```console
-$ uvx fast-nvim-release setup --prefix ~/.local
-```
-
-Without uv:
+touched: `uvx fast-nvim-release setup --prefix ~/.local`. Without uv:
 
 ```console
 $ python3 -m venv ~/.venvs/nvim && ~/.venvs/nvim/bin/pip install -q fast-nvim-release && ~/.venvs/nvim/bin/fast-nvim-release setup --prefix ~/.local
@@ -91,42 +84,45 @@ by itself. It needs Python 3.9 or newer: on RHEL 8 the default `python3` is
 3.6, so use `python3.9` (the `python39` package) or a module your site provides.
 
 **Restricted networks.** Only PyPI, or an internal PyPI mirror, is needed,
-never GitHub: `pip install --index-url https://pypi.example.internal/simple
-fast-nvim-release`. For machines with no network at all, see
+never GitHub. For machines with no network at all, see
 [Installing for other machines](#installing-for-other-machines).
 
-## Supported releases
+## Versions
 
-The wheel for your platform carries every release line, each pinned to its
-newest patch, so switching needs no network:
+A version is `<Neovim line>.<release>`: `0.12.3` is the third release of the
+0.12 line. A line's release number goes up whenever its wheels change: a new
+Neovim patch, or a fix in this tool. Each line always carries the newest patch
+of its Neovim line, so `pip install "fast-nvim-release==0.12.*"` gets the newest
+0.12. `fast-nvim-release --version` and the
+[GitHub releases](https://github.com/nickeisenberg/fast-nvim-release/releases)
+say exactly which Neovim each version carries.
 
-| Release | Neovim | Linux x86_64 | Linux arm64 | macOS | Windows x64 | Windows arm64 |
+| Line | Neovim | Linux x86_64 | Linux arm64 | macOS | Windows x64 | Windows arm64 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0.10` | 0.10.4 | ✓ | — * | ✓ | ✓ | — (no official build) |
 | `0.11` | 0.11.7 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `0.12` | 0.12.6 | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 \* the official 0.10 arm64 build needs glibc 2.38, while every other Linux build
-needs only 2.34; shipping it would drop Ubuntu 22.04, Debian 12 and RHEL 9 from
-the arm64 wheel. Use 0.11 or 0.12 there.
+needs only 2.34.
 
-`0.12` is the default. A release can be written `0.12`, `v0.12`, `12` or
-`0.12.6`.
+Lines are never retired: older lines keep getting releases when this tool
+changes, so every line from 0.10 on stays installable with the latest fixes.
 
-pip picks the wheel from the running Python's platform, and you get that
-platform's builds: an x86_64 Python under Rosetta 2 (or an x64 Python on
-Windows on ARM) gets the x86_64 build, which works but runs emulated.
+pip picks the wheel from the running Python's platform: an x86_64 Python under
+Rosetta 2 (or an x64 Python on Windows on ARM) gets the x86_64 build, which
+works but runs emulated.
 
 ### Older Linux (RHEL 8, CentOS 7, HPC clusters)
 
-Neovim's official Linux builds need glibc 2.34. For older systems there is a
-second Linux wheel built from the builds Neovim publishes in
+Neovim's official Linux builds need glibc 2.34. For older systems each line
+also has Linux wheels built from the builds Neovim publishes in
 [`neovim/neovim-releases`](https://github.com/neovim/neovim-releases), which
-need only glibc 2.17. You don't choose it: `pip install fast-nvim-release`
-picks it on any system too old for the official builds, and picks the official
-builds everywhere else. It works with the pip that RHEL 8's Python 3.9 ships.
+need only glibc 2.17. You don't choose them: pip picks them on any system too
+old for the official builds, and the official builds everywhere else. They
+work with the pip that RHEL 8's Python 3.9 ships.
 
-| Release | Older-Linux x86_64 | Older-Linux arm64 |
+| Line | Older-Linux x86_64 | Older-Linux arm64 |
 | --- | --- | --- |
 | `0.10` | 0.10.4 | — |
 | `0.11` | 0.11.7 | — |
@@ -136,18 +132,17 @@ builds everywhere else. It works with the pip that RHEL 8's Python 3.9 ships.
 why 0.12 is 0.12.5 there. Neovim calls these builds unsupported; they are built
 by Neovim's CI from the same sources.
 
-Systems with no Neovim build at all (Alpine/musl, macOS < 11, armv7, and
-arm64 with glibc < 2.34 for 0.10/0.11) get no wheel ("no matching
-distribution").
+Systems with no Neovim build at all (Alpine/musl, macOS < 11, armv7, and arm64
+with glibc < 2.34 for 0.10/0.11) get no wheel ("no matching distribution").
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `fast-nvim-release setup [RELEASE] --prefix DIR [--force]` | Install a release (default 0.12) into `DIR` |
+| `fast-nvim-release setup --prefix DIR [--force]` | Install the bundled Neovim into `DIR` |
 | `fast-nvim-release path [--prefix DIR]` | Print the `nvim` this tool installed in `DIR` |
-| `fast-nvim-release run [RELEASE] [--] [ARGS]` | Run a bundled nvim without installing it |
-| `fast-nvim-release --version` | This tool's version and the Neovim builds it carries |
+| `fast-nvim-release run [--] [ARGS]` | Run the bundled nvim without installing it |
+| `fast-nvim-release --version` | This tool's version and the Neovim it carries |
 
 ### Install location
 
@@ -161,41 +156,45 @@ ordinary Neovim layout:
 <prefix>/share/fast-nvim-release/     # records what was installed here
 ```
 
-A prefix holds one Neovim: installing another release into it replaces the
-previous one, so use separate prefixes to keep several. Files the tool did not
-install are never overwritten unless you pass `--force`; other files in
-`<prefix>/bin` are left alone. Nothing outside the prefix is written. If
-`<prefix>/bin` is not on `PATH`, `setup` says so.
+A prefix holds one Neovim: running `setup` from another line replaces it, so use
+separate prefixes to keep several. Files the tool did not install are never
+overwritten unless you pass `--force`; other files in `<prefix>/bin` are left
+alone. Nothing outside the prefix is written. If `<prefix>/bin` is not on
+`PATH`, `setup` says so.
 
 `path` exits 1 when the prefix has no install, which makes it the check to use
 in scripts. Without `--prefix` it looks in `~/.local` (on Windows,
 `%LOCALAPPDATA%\fast-nvim-release`).
 
-### Running without installing
+`run` hands everything after it to Neovim verbatim:
+`fast-nvim-release run -- -u NONE --headless "+q"`.
 
-`run` takes an optional release and hands everything else to Neovim verbatim:
-`fast-nvim-release run -- -u NONE --headless "+q"`, or
-`fast-nvim-release run 0.10 file.txt`. Only a version is read as the release, so
-`run notes.md` opens `notes.md`; put `--` first to open a file named like a
-version.
+### Stability
+
+The version number names the Neovim line, so it cannot announce breaking
+changes in this tool. Instead, the command line is stable: the commands and
+flags above, the prefix layout, and the exit codes (0 success, 1 error, 2 bad
+usage) keep working. New commands or flags may be added; existing ones are not
+removed or changed in meaning. Message wording and the Python modules inside
+the package are not part of this promise.
 
 ## Installing for other machines
 
-Each wheel carries one platform's builds. To prepare all of them, for example
+Each wheel carries one platform's build. To prepare all of them, for example
 for machines without internet access, let pip download the other platforms'
-wheels:
+wheels of a line:
 
 ```console
 for p in manylinux_2_34_x86_64 manylinux_2_34_aarch64 macosx_11_0_x86_64 \
          macosx_11_0_arm64 win_amd64 win_arm64 manylinux2014_x86_64 manylinux2014_aarch64; do
-  pip download fast-nvim-release --no-deps --only-binary=:all: --platform $p -d wheels/
+  pip download "fast-nvim-release==0.12.*" --no-deps --only-binary=:all: --platform $p -d wheels/
 done
 ```
 
 On each machine, `pip install --no-index --find-links wheels/ fast-nvim-release`
 picks the matching wheel. pip checks each file against the hash PyPI recorded.
-Without Python on the target, unzip the wheel: `fast_nvim_release/_nvim/<release>/<platform>/`
-inside it is a complete Neovim tree.
+Without Python on the target, unzip the wheel: `fast_nvim_release/_nvim/` inside
+it is a complete Neovim tree.
 
 ## Other ways to get Neovim
 
@@ -212,20 +211,21 @@ PyPI is reachable.
 | Official tarball / AppImage | no | GitHub releases | by hand | any machine with GitHub access |
 | mise / asdf | no | usually GitHub releases | yes | if you already manage tools with them |
 | Neovim setup actions for GitHub Actions | no | usually GitHub releases | per job | GitHub Actions only |
-| fast-nvim-release | no | PyPI or a PyPI mirror | yes (0.10, 0.11, 0.12) | CI, no root, fresh servers, restricted networks |
+| fast-nvim-release | no | PyPI or a PyPI mirror | yes, one line per install | CI, no root, fresh servers, restricted networks |
 
 Use something else when you want nightly or a release older than 0.10, when
-your platform has no wheel (see [Supported releases](#supported-releases)), or
-when you want updates to arrive with the rest of your system.
+your platform has no wheel, or when you want updates to arrive with the rest of
+your system.
 
 ## Contributing
 
-Building the wheels and bumping a Neovim release are described in
+Building the wheels, releasing and bumping Neovim versions are described in
 [`CONTRIBUTING.md`](https://github.com/nickeisenberg/fast-nvim-release/blob/master/CONTRIBUTING.md).
 
 ## License
 
 fast-nvim-release is MIT licensed. The vendored Neovim binaries and runtime are
 distributed under Neovim's license (Apache-2.0, plus the Vim license for parts
-of the runtime); see [`THIRD_PARTY_NOTICES.md`](https://github.com/nickeisenberg/fast-nvim-release/blob/master/THIRD_PARTY_NOTICES.md) and the
-`fast_nvim_release/_nvim/LICENSE.nvim-<release>.txt` files inside the wheel.
+of the runtime); see
+[`THIRD_PARTY_NOTICES.md`](https://github.com/nickeisenberg/fast-nvim-release/blob/master/THIRD_PARTY_NOTICES.md)
+and the `fast_nvim_release/_nvim/LICENSE.nvim-<line>.txt` file inside the wheel.

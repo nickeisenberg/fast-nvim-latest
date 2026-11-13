@@ -11,86 +11,105 @@ $ python -m ruff check .
 $ python -m ruff format --check .
 ```
 
-`requirements-ci.txt` is the one list of tool pins for `ci.yml` and
-`release.yml`. Actions in the workflows are pinned to commit SHAs with the tag
-in a comment; bump both together.
+`requirements-ci.txt` is the one list of tool pins for the workflows. Actions
+are pinned to commit SHAs with the tag in a comment; bump both together.
 
 ## Layout
 
 ```
-src/fast_nvim_release/platforms.py  releases, platforms, wheels and pinned checksums
-src/fast_nvim_release/bundle.py     find the bundled builds, install into a prefix
-src/fast_nvim_release/cli.py        setup / path / run
-setup.py                            tags the wheel with its platform
-scripts/fetch_nvim.py               download, verify and unpack builds into the package
-scripts/build_wheels.py             build every wheel in platforms.WHEELS
-scripts/check_wheels.py             validate wheels before upload
-scripts/smoke_test.py               install a wheel in a clean venv and use it
-scripts/check_upstream.py           is every pin still the newest patch? (both repos)
+lines.json                          every Neovim line: release counter k, pinned builds
+src/fast_nvim_release/cli.py        setup / path / run  (the stable interface)
+src/fast_nvim_release/bundle.py     the bundled build, installing into a prefix
+src/fast_nvim_release/platforms.py  platforms, wheel tags, which machine this is
+setup.py                            versions and tags the wheel from _nvim/build.json
+scripts/lines.py                    lines.json -> the list of wheels to build
+scripts/fetch_nvim.py               download, verify and unpack one wheel's build
+scripts/build_wheels.py             build any set of wheels (or only unpublished ones)
+scripts/check_wheels.py             validate wheels against lines.json
+scripts/smoke_test.py               install wheels in a clean venv and use them
+scripts/pins.py                     follow Neovim's releases; bump k
+scripts/release_notes.py            one GitHub release per published version
 ```
 
-## Building wheels
+## Versions and lines
 
-A wheel can only carry one platform's executables, so each version publishes
-eight wheels with the same version and different platform tags (the scheme
-`ruff` and `uv` use), all listed in `platforms.WHEELS`:
+A package version is `<line>.<k>`: one Neovim line, and that line's release
+counter `k` from `lines.json`. Each line carries the newest patch of its
+Neovim line: the official build (`neovim/neovim`) for six platforms, plus,
+where Neovim publishes one, the glibc 2.17 build (`neovim/neovim-releases`)
+for older Linux, in wheels tagged `manylinux_2_17_*.manylinux2014_*`. pip
+prefers the `manylinux_2_34` wheel wherever it can run.
 
-- six with Neovim's official builds (`RELEASES`), one per platform;
-- two Linux wheels for older systems, tagged
-  `manylinux_2_17_*.manylinux2014_*`, with the glibc 2.17 builds from
-  `neovim/neovim-releases` (`OLD_GLIBC_RELEASES`). pip prefers the
-  `manylinux_2_34` wheel wherever it can run, so these only reach systems the
-  official builds cannot start on. The `manylinux2014` alias lets pip < 20.3
-  (RHEL 8's python39) recognise them.
+`k` goes up whenever anything in that line's wheels changes. Nothing is ever
+deleted from PyPI, and a release only publishes versions the index does not
+have yet, so bumping `k` is how a line gets released and every other line is
+left alone.
+
+The command line is a promise (see "Stability" in the README): versions name
+Neovim lines, so they cannot signal breaking changes. Add, never remove.
+
+## Building wheels locally
 
 ```console
-$ python scripts/fetch_nvim.py                  # vendor this machine's builds
-$ python -m build --wheel                       # one wheel for this machine
-$ python scripts/build_wheels.py --all          # all eight, from any machine
-$ python scripts/build_wheels.py --wheel manylinux_2_17_x86_64.manylinux2014_x86_64
+$ python scripts/fetch_nvim.py                  # newest line, the wheel pip picks here
+$ python scripts/fetch_nvim.py --line 0.11      # another line
+$ pip install .                                 # or: python -m build --wheel
+$ python scripts/build_wheels.py --wheel host   # every line's wheel for this machine
+$ python scripts/build_wheels.py --all          # every wheel of every line
 $ python scripts/check_wheels.py                # validate dist/*.whl
-$ python scripts/smoke_test.py [WHEEL]          # install a wheel and use it
+$ python scripts/smoke_test.py dist/*.whl       # install them and use them
 ```
 
-`fetch_nvim.py` caches archives in `~/.cache/fast-nvim-release`
-(`FAST_NVIM_RELEASE_CACHE_DIR`), checks them against the sha256 pinned in
-`platforms.py` every time, and unpacks only `bin/`, `lib/nvim/` and
-`share/nvim/runtime/` into `src/fast_nvim_release/_nvim/<release>/<platform>/`
-(git-ignored), with a `VERSION` file naming the build's Neovim version (the
-old-glibc wheels can carry an older patch than the main pin). The per-release
-`LICENSE.nvim-<release>.txt` files there are tracked, because every wheel must
-ship them.
+`fetch_nvim.py` unpacks one build into `src/fast_nvim_release/_nvim/` (git
+ignores it) with a `build.json` naming the version, Neovim build and wheel tag,
+which `setup.py` reads. On a Linux older than glibc 2.34 the default is the
+old-glibc wheel, so the same two commands work there. Archives are cached in
+`~/.cache/fast-nvim-release` (`FAST_NVIM_RELEASE_CACHE_DIR`) and checked against
+`lines.json` every time. The `LICENSE.nvim-<line>.txt` files in `_nvim/` are
+tracked, because every wheel must ship its line's license.
 
-## Adding or bumping a release
+## When Neovim ships a patch (or a new line)
 
-1. `python scripts/check_upstream.py` prints the newest patch of each line,
-   for both `neovim/neovim` and `neovim/neovim-releases`.
-   (`.github/workflows/upstream.yml` runs it with `--strict` every Monday.)
-2. Update `RELEASES` in `platforms.py`: the version, and the sha256 of each
-   platform's archive from the release's `.sha256sum` file or GitHub's asset
-   digest. Leave out a platform Neovim does not publish, or whose build would
-   raise the wheel's platform tag. Update `OLD_GLIBC_RELEASES` the same way
-   once `neovim-releases` publishes the new patch; until then it may stay a
-   patch behind (`check_upstream.py` prints a note, not a failure).
-3. If it is a new minor line, check its glibc and macOS floor still fit the
-   tags in `PLATFORMS` (`check_wheels.py` checks glibc automatically; for macOS,
-   `otool -l bin/nvim | grep -A3 LC_BUILD_VERSION` shows `minos`).
-4. `python scripts/build_wheels.py --all && python scripts/check_wheels.py`
-   (it fails if an old-glibc binary needs more than glibc 2.17).
+`.github/workflows/upstream.yml` runs `python scripts/pins.py update` every
+Monday. It moves each pin to the newest patch in its repository with the
+checksums GitHub publishes, adds new lines, bumps `k` of every changed line,
+and opens a pull request (branch `pins/update`) with CI started on it. Review
+`lines.json`, wait for CI, merge, then release.
+
+By hand: `python scripts/pins.py check` reports, `python scripts/pins.py update`
+edits `lines.json` the same way.
+
+Check a new line's glibc and macOS floor: `check_wheels.py` fails if a Linux
+build needs a newer glibc than its tag, and for macOS
+`otool -l bin/nvim | grep -A3 LC_BUILD_VERSION` shows `minos` (the tags promise
+11.0). A build that cannot meet its tag goes in that build's `skip` list in
+`lines.json` (0.10's arm64 build needs glibc 2.38, for example).
+
+## When our code changes
+
+Only changes to the installed package (`src/fast_nvim_release/`) need a
+release; build scripts, CI and docs do not. Batch fixes, then:
+
+```console
+$ python scripts/pins.py bump --all     # every line gets k + 1
+```
+
+commit, merge, and release.
 
 ## Releasing
 
-`.github/workflows/release.yml` publishes on a `v*` tag push, via PyPI trusted
-publishing:
+Actions > release > Run workflow, choosing the index (TestPyPI by default).
+It builds every version in `lines.json` that index does not have, validates
+and smoke-tests them, and uploads them. Publishing to PyPI also creates one
+GitHub release per version, listing the exact Neovim in each wheel. An index
+never accepts the same version twice; rehearse on TestPyPI first.
 
-```console
-$ git tag -a v0.3.0 -m "fast-nvim-release 0.3.0"
-$ git push origin v0.3.0
-```
-
-The tag must equal `fast_nvim_release.__version__`; the release job fails the
-upload otherwise. A manual `workflow_dispatch` run with `publish: true`
-rehearses against TestPyPI only. PyPI uploads are permanent.
+One-time setup on each index (Your account > Publishing > add a pending
+publisher, or the project's Publishing settings): repository
+`nickeisenberg/fast-nvim-release`, workflow `release.yml`, environment
+`testpypi` or `pypi` (matching the GitHub environments of the same names). The
+weekly bot also needs Settings > Actions > General > "Allow GitHub Actions to
+create and approve pull requests".
 
 ## License
 
