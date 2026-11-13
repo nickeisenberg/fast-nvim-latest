@@ -17,7 +17,7 @@ concurrency:
 
 env:
   # archives are ~12 MB each and the pin changes rarely; see the cache steps
-  NVIM_CACHE: ~/.cache/fast-nvim-latest
+  NVIM_CACHE: ~/.cache/fast-nvim-release
 
 jobs:
   lint:
@@ -62,7 +62,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.NVIM_CACHE }}
-          key: nvim-${{ runner.os }}-${{ hashFiles('src/fast_nvim_latest/platforms.py') }}
+          key: nvim-${{ runner.os }}-${{ hashFiles('src/fast_nvim_release/platforms.py') }}
       - name: vendor Neovim for this platform
         run: python scripts/fetch_nvim.py
       - name: build the wheel

@@ -7,6 +7,7 @@ is worse than none.
 
 from __future__ import annotations
 
+import io
 import json
 import stat
 import sys
@@ -16,8 +17,14 @@ from pathlib import Path
 
 import pytest
 
-from fast_nvim_latest import __version__, bundle
-from fast_nvim_latest.platforms import NVIM_VERSION, TARGETS, Target, host_target
+from fast_nvim_release import __version__, bundle
+from fast_nvim_release.platforms import (
+    PLATFORMS,
+    RELEASE_KEYS,
+    RELEASES,
+    Target,
+    host_platform,
+)
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS) not in sys.path:
@@ -26,7 +33,7 @@ if str(SCRIPTS) not in sys.path:
 import check_wheels  # noqa: E402
 import fetch_nvim  # noqa: E402
 
-TARGET = TARGETS["windows-x86_64"]  # no glibc/macOS floor to check
+WIN = PLATFORMS["windows-x86_64"]  # no glibc/macOS floor to check
 
 
 # --------------------------------------------------------------------------
@@ -34,19 +41,21 @@ TARGET = TARGETS["windows-x86_64"]  # no glibc/macOS floor to check
 # --------------------------------------------------------------------------
 def fake_wheel(
     tmp_path: Path,
-    target: Target = TARGET,
+    platform=WIN,
     *,
+    releases=tuple(RELEASE_KEYS),
     version: str = __version__,
     with_license: bool = True,
-    payload_version: str = NVIM_VERSION,
-    payload_sha: str = "",
     purelib: str = "false",
-    runtime_files: int = 2001,
+    runtime_files: int = 1501,
     entry_points: bool = True,
+    payload_version: str = "",
+    payload_sha: str = "",
+    index_text: str = "",
 ) -> Path:
-    path = tmp_path / f"fast_nvim_latest-{version}-py3-none-{target.wheel_tag}.whl"
-    prefix = "fast_nvim_latest/_nvim/"
-    dist = f"fast_nvim_latest-{version}.dist-info/"
+    path = tmp_path / f"fast_nvim_release-{version}-py3-none-{platform.wheel_tag}.whl"
+    prefix = "fast_nvim_release/_nvim/"
+    dist = f"fast_nvim_release-{version}.dist-info/"
 
     def add(name: str, data: bytes = b"", mode: int = 0o644) -> None:
         info = zipfile.ZipInfo(name)
@@ -54,37 +63,48 @@ def fake_wheel(
         zf.writestr(info, data)
 
     with zipfile.ZipFile(path, "w") as zf:
-        add("fast_nvim_latest/__init__.py")
-        add(f"{prefix}{target.key}/bin/{target.exe}", b"MZ", 0o755)
-        for index in range(runtime_files):
-            add(f"{prefix}{target.key}/share/nvim/runtime/generated{index}.vim")
-        for required in ("syntax/syntax.vim", "doc/tags", "filetype.lua"):
-            add(f"{prefix}{target.key}/share/nvim/runtime/{required}")
+        add("fast_nvim_release/__init__.py")
+        for release_key in releases:
+            target = RELEASES[release_key].target(platform.key)
+            if target is None:
+                continue
+            root = f"{prefix}{release_key}/{platform.key}/"
+            add(f"{root}bin/{target.exe}", b"MZ", 0o755)
+            for index in range(runtime_files):
+                add(f"{root}share/nvim/runtime/generated{index}.vim")
+            for required in ("syntax/syntax.vim", "doc/tags", "filetype.lua"):
+                add(f"{root}share/nvim/runtime/{required}")
+            add(
+                f"{root}BUILD_INFO.json",
+                json.dumps(
+                    {
+                        "release": release_key,
+                        "nvim_version": payload_version or target.nvim_version,
+                        "sha256": payload_sha or target.sha256,
+                    }
+                ).encode(),
+            )
+            if with_license:
+                add(f"{prefix}LICENSE.nvim-{release_key}.txt", b"Apache License 2.0\n")
         add(
             f"{prefix}BUILD_INFO.json",
-            json.dumps({"nvim_version": NVIM_VERSION}).encode(),
-        )
-        add(
-            f"{prefix}{target.key}/BUILD_INFO.json",
-            json.dumps(
-                {
-                    "nvim_version": payload_version,
-                    "sha256": payload_sha or target.sha256,
-                }
+            (
+                index_text
+                or json.dumps(
+                    {"releases": {key: {"nvim_version": RELEASES[key].version} for key in releases}}
+                )
             ).encode(),
         )
-        if with_license:
-            add(f"{prefix}LICENSE.nvim.txt", b"Apache License 2.0\n")
         add(
             f"{dist}WHEEL",
-            f"Root-Is-Purelib: {purelib}\nTag: py3-none-{target.wheel_tag}\n".encode(),
+            f"Root-Is-Purelib: {purelib}\nTag: py3-none-{platform.wheel_tag}\n".encode(),
         )
         add(
             f"{dist}METADATA",
             b"Metadata-Version: 2.4\nDescription-Content-Type: text/markdown\n\n# x\n",
         )
         if entry_points:
-            add(f"{dist}entry_points.txt", b"[console_scripts]\nfast-nvim-latest = x\n")
+            add(f"{dist}entry_points.txt", b"[console_scripts]\nfast-nvim-release = x\n")
     return path
 
 
@@ -97,7 +117,7 @@ def test_a_good_wheel_passes(tmp_path):
 
 def test_a_missing_license_is_an_error(tmp_path):
     problems = check_wheels.check(fake_wheel(tmp_path, with_license=False))
-    assert any("LICENSE.nvim.txt" in problem for problem in problems)
+    assert any("LICENSE.nvim-0.12.txt" in problem for problem in problems)
 
 
 def test_a_payload_from_another_release_is_an_error(tmp_path):
@@ -121,8 +141,32 @@ def test_a_wheel_without_a_runtime_is_an_error(tmp_path):
     assert any("$VIMRUNTIME" in problem for problem in problems)
 
 
+def test_a_wheel_must_ship_the_platform_its_tag_names(tmp_path):
+    """A win_amd64 wheel carrying no Windows payload is not installable."""
+    path = tmp_path / f"fast_nvim_release-{__version__}-py3-none-win_amd64.whl"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("fast_nvim_release/__init__.py", b"")
+        zf.writestr(
+            f"fast_nvim_release-{__version__}.dist-info/WHEEL",
+            b"Root-Is-Purelib: false\nTag: py3-none-win_amd64\n",
+        )
+        zf.writestr(
+            f"fast_nvim_release-{__version__}.dist-info/METADATA",
+            b"Description-Content-Type: text/markdown\n",
+        )
+    problems = check_wheels.check(path)
+    assert any("carries no Neovim builds" in problem for problem in problems)
+
+
+def test_the_index_has_to_mention_every_shipped_release(tmp_path):
+    problems = check_wheels.check(
+        fake_wheel(tmp_path, index_text=json.dumps({"releases": {"0.12": {}}}))
+    )
+    assert any("does not mention v0.10.4" in problem for problem in problems)
+
+
 def test_garbage_is_reported_not_raised(tmp_path):
-    broken = tmp_path / f"fast_nvim_latest-{__version__}-py3-none-{TARGET.wheel_tag}.whl"
+    broken = tmp_path / f"fast_nvim_release-{__version__}-py3-none-{WIN.wheel_tag}.whl"
     broken.write_bytes(b"not a zip")
     problems = check_wheels.check(broken)
     assert problems and "not a readable wheel" in problems[0]
@@ -130,7 +174,7 @@ def test_garbage_is_reported_not_raised(tmp_path):
 
 def test_unknown_names_and_tags_are_reported(tmp_path):
     assert check_wheels.check(tmp_path / "README.md")
-    wrong = tmp_path / f"fast_nvim_latest-{__version__}-py3-none-solaris_9_x86_64.whl"
+    wrong = tmp_path / f"fast_nvim_release-{__version__}-py3-none-solaris_9_x86_64.whl"
     wrong.write_bytes(b"")
     assert "unknown platform tag" in check_wheels.check(wrong)[0]
 
@@ -158,46 +202,73 @@ def test_tag_parsing():
 
 def test_real_binaries_match_their_tags():
     """The pinned tags are only useful if the binaries agree with them."""
-    host = host_target()
-    if host is None:
+    here = host_platform()
+    if here is None:
         pytest.skip("unknown host platform")
-    exe = bundle.bundle_exe(host.key)
-    if not exe.is_file():
+    checked = 0
+    for release_key in RELEASE_KEYS:
+        target = RELEASES[release_key].target(here.key)
+        if target is None:
+            continue
+        exe = bundle.bundle_exe(release_key, here.key)
+        if not exe.is_file():
+            continue
+        data = exe.read_bytes()
+        assert check_wheels.binary_arch(data) == here.arch, target.label
+        kind, floor = check_wheels.tagged_min_version(here.wheel_tag)
+        if kind == "glibc":
+            assert check_wheels.glibc_floor(data) <= floor, target.label
+        else:
+            assert check_wheels.macho_min_os(data) <= floor, target.label
+        checked += 1
+    if not checked:
         pytest.skip("no vendored build for this platform")
-    data = exe.read_bytes()
-    assert check_wheels.binary_arch(data) == host.arch
-    kind, floor = check_wheels.tagged_min_version(host.wheel_tag)
-    if kind == "glibc":
-        assert check_wheels.glibc_floor(data) <= floor
-    else:
-        assert check_wheels.macho_min_os(data) <= floor
+
+
+def test_the_download_only_build_would_break_the_arm64_tag():
+    """Guard the reason 0.10/linux-arm64 is *not* vendored: its glibc floor.
+
+    Reads the binary straight out of the cached archive, so it works without
+    vendoring (and skips when the archive has not been downloaded yet).
+    """
+    target = RELEASES["0.10"].target("linux-arm64")
+    assert target is not None
+    archive = bundle.cached_archive(target)
+    if not archive.is_file():
+        pytest.skip("0.10/linux-arm64 archive is not in the cache")
+
+    with tarfile.open(archive) as tar:
+        member = next(m for m in tar if m.isfile() and m.name.endswith("/bin/nvim"))
+        data = tar.extractfile(member).read()
+
+    floor = check_wheels.glibc_floor(data)
+    kind, tag_floor = check_wheels.tagged_min_version(PLATFORMS["linux-arm64"].wheel_tag)
+    assert kind == "glibc"
+    assert floor is not None
+    assert floor > tag_floor, (
+        "0.10/linux-arm64 would fit the arm64 wheel tag after all; "
+        "consider vendoring it in platforms.py"
+    )
 
 
 # --------------------------------------------------------------------------
 # fetch_nvim bookkeeping
 # --------------------------------------------------------------------------
 def refresh_target() -> Target:
-    """A target that never compares equal to the host's real build."""
-    return Target(
-        key="linux-arm64",
-        family="linux",
-        arch="arm64",
-        asset="fake-linux-arm64.tar.gz",
-        archive="tar.gz",
-        strip_prefix="fake-root",
-        sha256="a" * 64,
-        size=1,
-        exe="nvim",
-        wheel_tag="manylinux_2_34_aarch64",
-    )
+    """A target that never compares equal to a build we would vendor."""
+    target = RELEASES["0.10"].target("linux-arm64")
+    assert target is not None
+    return target
 
 
-def vendored_tree(root: Path, target: Target, version: str) -> Path:
-    final = root / target.key
+def vendored_tree(root: Path, release_key: str, platform_key: str, version: str) -> Path:
+    target = RELEASES[release_key].target(platform_key)
+    assert target is not None
+    final = root / release_key / platform_key
     (final / "bin").mkdir(parents=True)
     (final / "bin" / target.exe).write_text("#!/bin/sh\n", encoding="utf-8")
     (final / "BUILD_INFO.json").write_text(
-        json.dumps({"nvim_version": version, "sha256": target.sha256}),
+        json.dumps({"release": release_key, "nvim_version": version, "sha256": target.sha256}),
         encoding="utf-8",
     )
     return final
@@ -207,24 +278,24 @@ def archive_for(target: Target, tmp_path: Path) -> Path:
     path = tmp_path / target.asset
     with tarfile.open(path, "w:gz") as tar:
         for name, data in (
-            ("fake-root/bin/nvim", b"#!/bin/sh\n"),
-            ("fake-root/share/nvim/runtime/init.lua", b"-- lua\n"),
+            (f"{target.strip_prefix}/bin/nvim", b"#!/bin/sh\n"),
+            (f"{target.strip_prefix}/share/nvim/runtime/init.lua", b"-- lua\n"),
         ):
             info = tarfile.TarInfo(name)
             info.size = len(data)
             info.mode = 0o755
-            tar.addfile(info, __import__("io").BytesIO(data))
+            tar.addfile(info, io.BytesIO(data))
     return path
 
 
 @pytest.mark.skipif(
-    host_target() is not None and host_target().key == "linux-arm64",
+    host_platform() is not None and host_platform().key == "linux-arm64",
     reason="the fake binary would be executed on this host",
 )
 def test_vendor_skips_an_up_to_date_build(tmp_path, monkeypatch):
     target = refresh_target()
     dest = tmp_path / "_nvim"
-    vendored_tree(dest, target, NVIM_VERSION)
+    vendored_tree(dest, "0.10", "linux-arm64", "v0.10.4")
     monkeypatch.setattr(
         fetch_nvim.bundle,
         "fetch_archive",
@@ -234,13 +305,13 @@ def test_vendor_skips_an_up_to_date_build(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(
-    host_target() is not None and host_target().key == "linux-arm64",
+    host_platform() is not None and host_platform().key == "linux-arm64",
     reason="the fake binary would be executed on this host",
 )
 def test_vendor_refreshes_a_build_from_another_release(tmp_path, monkeypatch):
     target = refresh_target()
     dest = tmp_path / "_nvim"
-    final = vendored_tree(dest, target, "v0.0.1")
+    final = vendored_tree(dest, "0.10", "linux-arm64", "v0.0.1")
     (final / "share" / "nvim" / "runtime").mkdir(parents=True)
     (final / "share" / "nvim" / "runtime" / "stale.vim").write_text("old")
     monkeypatch.setattr(
@@ -248,47 +319,16 @@ def test_vendor_refreshes_a_build_from_another_release(tmp_path, monkeypatch):
     )
     assert fetch_nvim.vendor(target, dest) == fetch_nvim.VENDORED
     info = json.loads((final / "BUILD_INFO.json").read_text(encoding="utf-8"))
-    assert info["nvim_version"] == NVIM_VERSION
+    assert info["nvim_version"] == "v0.10.4"
+    assert info["release"] == "0.10"
     # the old tree is gone, not merged into the new one
     assert not (final / "share" / "nvim" / "runtime" / "stale.vim").exists()
     assert (final / "share" / "nvim" / "runtime" / "init.lua").is_file()
 
 
-@pytest.mark.skipif(
-    host_target() is not None and host_target().key == "linux-arm64",
-    reason="the fake binary would be executed on this host",
-)
-def test_main_exits_zero_when_everything_is_already_vendored(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FAST_NVIM_LATEST_CACHE_DIR", str(tmp_path / "cache"))
-    target = TARGETS["linux-arm64"]
-    dest = tmp_path / "_nvim"
-    vendored_tree(dest, target, NVIM_VERSION)
-    (dest / "LICENSE.nvim.txt").write_text("Apache License 2.0\n", encoding="utf-8")
-
-    assert fetch_nvim.main(["--platform", target.key, "--dest", str(dest)]) == 0
-    out = capsys.readouterr().out
-    assert "already vendored" in out
-    assert "next: python -m build --wheel" in out
-
-
-@pytest.mark.skipif(
-    host_target() is not None and host_target().key == "linux-arm64",
-    reason="the fake binary would be executed on this host",
-)
-def test_main_fails_when_the_licence_cannot_be_shipped(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FAST_NVIM_LATEST_CACHE_DIR", str(tmp_path / "cache"))
-    target = TARGETS["linux-arm64"]
-    dest = tmp_path / "_nvim"
-    vendored_tree(dest, target, NVIM_VERSION)
-
-    code = fetch_nvim.main(["--platform", target.key, "--dest", str(dest), "--offline"])
-    assert code == 1
-    assert "LICENSE.txt is missing" in capsys.readouterr().err
-
-
 def test_needs_refresh_explains_itself(tmp_path):
     target = refresh_target()
-    final = vendored_tree(tmp_path, target, NVIM_VERSION)
+    final = vendored_tree(tmp_path, "0.10", "linux-arm64", "v0.10.4")
     assert fetch_nvim._needs_refresh(final, target) is None
 
     (final / "BUILD_INFO.json").write_text(
@@ -298,7 +338,7 @@ def test_needs_refresh_explains_itself(tmp_path):
     assert "v0.0.1" in fetch_nvim._needs_refresh(final, target)
 
     (final / "BUILD_INFO.json").write_text(
-        json.dumps({"nvim_version": NVIM_VERSION, "sha256": "b" * 64}),
+        json.dumps({"nvim_version": "v0.10.4", "sha256": "b" * 64}),
         encoding="utf-8",
     )
     assert "checksum" in fetch_nvim._needs_refresh(final, target)
@@ -311,7 +351,39 @@ def test_fetch_nvim_list_does_not_need_the_network(capsys):
     assert fetch_nvim.main(["--list"]) == 0
     out = capsys.readouterr().out
     assert "linux-x86_64" in out
-    assert NVIM_VERSION in out
+    for key in RELEASE_KEYS:
+        assert key in out
+        assert RELEASES[key].version in out
+
+
+def test_fetch_nvim_tolerates_a_platform_one_release_never_had(tmp_path, capsys):
+    """0.10 has no Windows-on-ARM build; `--platform` for a whole wheel must work."""
+    for release_key in ("0.11", "0.12"):
+        fetch_nvim.license_file(tmp_path, release_key).write_text("Apache-2.0\n")
+    code = fetch_nvim.main(["--platform", "windows-arm64", "--dest", str(tmp_path), "--offline"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "skipping 0.10/windows-arm64" in out
+    assert not (tmp_path / "0.10" / "windows-arm64").exists()
+
+
+def test_fetch_nvim_fails_when_you_explicitly_ask_for_an_impossible_build(tmp_path, capsys):
+    code = fetch_nvim.main(
+        ["--release", "0.10", "--platform", "windows-arm64", "--dest", str(tmp_path), "--offline"]
+    )
+    assert code == 1
+    assert "has no windows-arm64 build" in capsys.readouterr().err
+
+
+def test_fetch_nvim_skips_download_only_builds(tmp_path, capsys):
+    """--all must not quietly vendor 0.10/linux-arm64 and break the tag."""
+    code = fetch_nvim.main(
+        ["--release", "0.10", "--platform", "linux-arm64", "--dest", str(tmp_path)]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "skipping 0.10/linux-arm64" in out
+    assert not (tmp_path / "0.10" / "linux-arm64" / "bin").exists()
 
 
 def test_expect_version_gate(tmp_path, capsys):
@@ -327,13 +399,29 @@ def test_expect_version_catches_an_empty_release(tmp_path, capsys):
 
 
 # --------------------------------------------------------------------------
+# build_wheels
+# --------------------------------------------------------------------------
+def test_build_wheels_carries_the_tracked_licences_into_the_work_copy(tmp_path):
+    """`--offline` builds must not fail because `_nvim` was not copied."""
+    import build_wheels
+
+    work = tmp_path / "fast-nvim-release"
+    build_wheels._preserve_tracked_nvim_files(work)
+    source = SCRIPTS.parent / "src" / "fast_nvim_release" / "_nvim"
+    copied = list((work / "src" / "fast_nvim_release" / "_nvim").glob("LICENSE.nvim-*.txt"))
+    assert copied, "no licences copied into the work tree"
+    for path in copied:
+        assert path.read_bytes() == (source / path.name).read_bytes()
+
+
+# --------------------------------------------------------------------------
 # the name is written down in five places; keep them agreeing
 # --------------------------------------------------------------------------
 def test_the_project_name_is_consistent_everywhere():
     import importlib
     import re
 
-    from fast_nvim_latest import cli
+    from fast_nvim_release import cli
 
     pyproject = (SCRIPTS.parent / "pyproject.toml").read_text(encoding="utf-8")
     name = re.search(r'^name = "([^"]+)"', pyproject, re.M).group(1)
@@ -342,7 +430,7 @@ def test_the_project_name_is_consistent_everywhere():
     )
     entry_point, module = script.groups()
 
-    assert name == "fast-nvim-latest"
+    assert name == "fast-nvim-release"
     assert entry_point == cli.PROG == name
     package, _, attribute = module.rpartition(".")
     assert attribute == "cli"
@@ -350,26 +438,26 @@ def test_the_project_name_is_consistent_everywhere():
     assert callable(importlib.import_module(module).main)
     # wheel file names use the normalised (underscored) form
     assert check_wheels.WHEEL_NAME.match(
-        f"{name.replace('-', '_')}-0.1.0-py3-none-{TARGET.wheel_tag}.whl"
+        f"{name.replace('-', '_')}-0.1.0-py3-none-{WIN.wheel_tag}.whl"
     )
 
 
 def test_the_cache_and_marker_directories_are_named_after_the_project():
-    assert bundle.cache_root().name == "fast-nvim-latest"
-    assert bundle.MARKER_DIR.as_posix() == "share/fast-nvim-latest"
-    assert "fast-nvim-latest" in bundle.USER_AGENT
+    assert bundle.cache_root().name == "fast-nvim-release"
+    assert bundle.MARKER_DIR.as_posix() == "share/fast-nvim-release"
+    assert "fast-nvim-release" in bundle.USER_AGENT
 
 
 def test_version_output_is_aligned_and_uses_the_real_program_name(capsys):
     import re
 
-    from fast_nvim_latest import cli
+    from fast_nvim_release import cli
 
     assert cli.main(["version"]) == 0
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     assert lines[0].startswith(f"{cli.PROG} ")
     starts = set()
-    for line in lines:
+    for line in lines[:6]:
         match = re.match(r".*?\s{2,}(\S.*)$", line)
         assert match, line
         starts.add(match.start(1))
@@ -462,8 +550,8 @@ def test_a_passing_log_produces_no_annotations(tmp_path, capsys):
 
 def test_a_windows_wheel_needs_no_posix_exec_bit(tmp_path):
     """zipfile on Windows records no 0o111, so demanding one was a false alarm."""
-    path = fake_wheel(tmp_path, target=TARGETS["windows-x86_64"])
-    # rewrite the exe entry the way a Windows build would store it
+    path = fake_wheel(tmp_path, platform=PLATFORMS["windows-x86_64"])
+    # rewrite the exe entries the way a Windows build would store them
     import shutil
 
     rebuilt = tmp_path / path.name

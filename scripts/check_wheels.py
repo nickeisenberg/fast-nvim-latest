@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate built wheels: one platform's Neovim per wheel, tag matches payload.
+"""Validate built wheels: one platform's Neovim releases per wheel, tag matches.
 
     python scripts/check_wheels.py dist/*.whl
 
@@ -24,10 +24,13 @@ from typing import List, Optional, Tuple
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_latest.platforms import NVIM_VERSION, TARGETS  # noqa: E402
+from fast_nvim_release.platforms import (  # noqa: E402
+    PLATFORMS,
+    RELEASES,
+)
 
-WHEEL_NAME = re.compile(r"^fast_nvim_latest-(?P<version>[^-]+)-py3-none-(?P<tag>.+)\.whl$")
-BY_TAG = {target.wheel_tag: target for target in TARGETS.values()}
+WHEEL_NAME = re.compile(r"^fast_nvim_release-(?P<version>[^-]+)-py3-none-(?P<tag>.+)\.whl$")
+BY_TAG = {platform.wheel_tag: platform for platform in PLATFORMS.values()}
 
 MANYLINUX = re.compile(r"^manylinux_(?P<major>\d+)_(?P<minor>\d+)_(?P<arch>.+)$")
 MACOSX = re.compile(r"^macosx_(?P<major>\d+)_(?P<minor>\d+)_(?P<arch>.+)$")
@@ -35,7 +38,9 @@ WIN = re.compile(r"^win_(?P<arch>.+)$")
 GLIBC_SYMBOL = re.compile(rb"GLIBC_(\d+)\.(\d+)")
 
 PYPI_MAX_BYTES = 100 * 1024 * 1024
-MIN_RUNTIME_FILES = 2000
+# 0.10 ships 1876 runtime files, 0.12 ships 2116; anything far below
+# that means $VIMRUNTIME did not come along
+MIN_RUNTIME_FILES = 1500
 
 ELF_MACHINES = {62: "x86_64", 183: "arm64"}
 PE_MACHINES = {0x8664: "x86_64", 0xAA64: "arm64"}
@@ -158,78 +163,58 @@ def _read_metadata(wheel: zipfile.ZipFile, names: List[str], suffix: str) -> str
     raise KeyError(suffix)
 
 
-def _check_contents(path: Path, tag: str, target) -> List[str]:
+def _check_contents(path: Path, tag: str, platform) -> List[str]:
     problems: List[str] = []
     with zipfile.ZipFile(path) as wheel:
         names = set(wheel.namelist())
         wheel_meta = _read_metadata(wheel, names, ".dist-info/WHEEL")
         metadata = _read_metadata(wheel, names, ".dist-info/METADATA")
 
-        prefix = "fast_nvim_latest/_nvim/"
-        bundles = sorted(
+        prefix = "fast_nvim_release/_nvim/"
+        releases = sorted(
             {
                 name[len(prefix) :].split("/")[0]
                 for name in names
                 if name.startswith(prefix) and name.count("/") > 2
             }
-            - {"BUILD_INFO.json", "LICENSE.nvim.txt"}
+            - {"BUILD_INFO.json"}
         )
-        # more than one bundle is allowed (private/offline distributions),
-        # but this wheel's own build has to be there and nothing else may be
-        # tagged as it.
-        if target.key not in bundles:
-            problems.append(f"expected the {target.key} bundle, found {bundles}")
-
-        if f"{prefix}LICENSE.nvim.txt" not in names:
-            problems.append(f"missing {prefix}LICENSE.nvim.txt (Neovim's license must ship)")
-
-        exe = f"{prefix}{target.key}/bin/{target.exe}"
-        binary = b""
-        if exe not in names:
-            problems.append(f"missing {exe}")
-        else:
-            info = wheel.getinfo(exe)
-            mode = info.external_attr >> 16
-            # only POSIX wheels can record an executable bit; a wheel built on
-            # Windows has none, and pip's shim does not need one there
-            if target.family != "windows" and mode and not mode & 0o111:
-                problems.append(f"{exe} is not executable in the archive")
-            binary = wheel.read(exe)
-
-        runtime = [name for name in names if "/share/nvim/runtime/" in name]
-        if len(runtime) < MIN_RUNTIME_FILES:
-            problems.append(f"only {len(runtime)} runtime files; the wheel is missing $VIMRUNTIME")
-        for required in ("syntax/syntax.vim", "doc/tags", "filetype.lua"):
-            wanted = f"{prefix}{target.key}/share/nvim/runtime/{required}"
-            if wanted not in names:
-                problems.append(f"runtime is missing {required}")
+        # more than one release is expected, and more than one platform is
+        # allowed (private/offline distributions), but this wheel's own
+        # platform has to be there and every shipped release must be complete.
+        if not releases:
+            problems.append("the wheel carries no Neovim builds at all")
+        elif platform.key not in {
+            name[len(prefix) :].split("/")[1]
+            for name in names
+            if name.startswith(prefix) and name.count("/") > 2
+        }:
+            problems.append(f"expected the {platform.key} build, found {releases}")
 
         index = "{}{}".format(prefix, "BUILD_INFO.json")
+        index_text = wheel.read(index).decode("utf-8", "replace") if index in names else ""
         if index not in names:
             problems.append(f"missing {index}")
-        elif NVIM_VERSION not in wheel.read(index).decode():
-            problems.append(f"{index} does not mention {NVIM_VERSION}")
-
-        payload = f"{prefix}{target.key}/BUILD_INFO.json"
-        if payload not in names:
-            problems.append(f"missing {payload}")
         else:
-            try:
-                info = json.loads(wheel.read(payload).decode())
-            except ValueError:
-                problems.append(f"{payload} is not valid JSON")
-            else:
-                if info.get("nvim_version") != NVIM_VERSION:
-                    problems.append(
-                        "{} is for {}, the pin says {}".format(
-                            payload, info.get("nvim_version"), NVIM_VERSION
-                        )
-                    )
-                if target.sha256 and info.get("sha256") != target.sha256:
-                    problems.append(f"{payload} has a different archive checksum")
+            for release_key in releases:
+                if release_key not in RELEASES:
+                    problems.append(f"{release_key} is not a release this project supports")
+                    continue
+                if RELEASES[release_key].version not in index_text:
+                    problems.append(f"{index} does not mention {RELEASES[release_key].version}")
 
-        if binary:
-            problems.extend(_check_binary(binary, tag, target, exe))
+        for release_key in releases:
+            built = RELEASES.get(release_key)
+            if built is None:
+                continue
+            target = built.target(platform.key)
+            if target is None:
+                problems.append(f"Neovim {built.version} has no {platform.key} build")
+                continue
+            licence = f"{prefix}LICENSE.nvim-{release_key}.txt"
+            if licence not in names:
+                problems.append(f"missing {licence} (Neovim's license must ship)")
+            problems.extend(_check_release(wheel, names, prefix, target, tag))
 
         if "Root-Is-Purelib: false" not in wheel_meta:
             problems.append("WHEEL has Root-Is-Purelib: true; data would land in .data/")
@@ -245,6 +230,60 @@ def _check_contents(path: Path, tag: str, target) -> List[str]:
         problems.append(
             f"{path.stat().st_size / 1024 / 1024:.1f} MB exceeds PyPI's 100 MiB per-file limit"
         )
+    return problems
+
+
+def _check_release(wheel, names, prefix, target, tag: str) -> List[str]:
+    """Payload checks for one (release, platform) inside the wheel."""
+    problems: List[str] = []
+    root = f"{prefix}{target.release_key}/{target.key}/"
+
+    exe = f"{root}bin/{target.exe}"
+    binary = b""
+    if exe not in names:
+        problems.append(f"missing {exe}")
+    else:
+        info = wheel.getinfo(exe)
+        mode = info.external_attr >> 16
+        # only POSIX wheels can record an executable bit; a wheel built on
+        # Windows has none, and pip's shim does not need one there
+        if target.family != "windows" and mode and not mode & 0o111:
+            problems.append(f"{exe} is not executable in the archive")
+        binary = wheel.read(exe)
+
+    runtime = [name for name in names if name.startswith(root) and "/share/nvim/runtime/" in name]
+    if len(runtime) < MIN_RUNTIME_FILES:
+        problems.append(
+            f"{target.label}: only {len(runtime)} runtime files; the wheel is missing $VIMRUNTIME"
+        )
+    for required in ("syntax/syntax.vim", "doc/tags", "filetype.lua"):
+        wanted = f"{root}share/nvim/runtime/{required}"
+        if wanted not in names:
+            problems.append(f"{target.label}: runtime is missing {required}")
+
+    payload = f"{root}BUILD_INFO.json"
+    if payload not in names:
+        problems.append(f"missing {payload}")
+    else:
+        try:
+            info = json.loads(wheel.read(payload).decode())
+        except ValueError:
+            problems.append(f"{payload} is not valid JSON")
+        else:
+            if info.get("nvim_version") != target.nvim_version:
+                problems.append(
+                    "{} is for {}, the pin says {}".format(
+                        payload, info.get("nvim_version"), target.nvim_version
+                    )
+                )
+            if info.get("release") not in (None, target.release_key):
+                problems.append(f"{payload} says release {info.get('release')}")
+            if target.sha256 and info.get("sha256") != target.sha256:
+                problems.append(f"{payload} has a different archive checksum")
+
+    if binary:
+        problems.extend(_check_binary(binary, tag, target, exe))
+
     return problems
 
 
@@ -279,13 +318,13 @@ def _check_binary(binary: bytes, tag: str, target, exe: str) -> List[str]:
 def check(path: Path) -> List[str]:
     match = WHEEL_NAME.match(path.name)
     if not match:
-        return ["unexpected wheel name (want fast_nvim_latest-<version>-py3-none-<platform>.whl)"]
+        return ["unexpected wheel name (want fast_nvim_release-<version>-py3-none-<platform>.whl)"]
     tag = match.group("tag")
-    target = BY_TAG.get(tag)
-    if target is None:
+    platform = BY_TAG.get(tag)
+    if platform is None:
         return ["unknown platform tag {!r}; known: {}".format(tag, ", ".join(sorted(BY_TAG)))]
     try:
-        return _check_contents(path, tag, target)
+        return _check_contents(path, tag, platform)
     except (zipfile.BadZipFile, OSError, KeyError) as exc:
         return [f"not a readable wheel: {exc}"]
 
@@ -297,8 +336,8 @@ def wheel_version(path: Path) -> Optional[str]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Validate fast-nvim-latest wheels: one platform's Neovim per wheel, "
-        "and a tag that matches the binary inside it.",
+        description="Validate fast-nvim-release wheels: one platform per wheel, every "
+        "bundled Neovim release complete, and a tag that matches the binaries inside.",
     )
     parser.add_argument("wheels", nargs="*", help="wheel files (default: dist/*.whl)")
     parser.add_argument(

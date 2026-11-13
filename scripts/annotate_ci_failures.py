@@ -51,8 +51,8 @@ def annotate(path: Path) -> int:
     if not picked:
         return 0
     for line in picked:
-        text = line.replace("\r", " ")
-        print(f"::error::[{path.name}] " + text[:MAX_CHARS])
+        message = line.replace("\r", " ")
+        print(f"::error::[{path.name}] " + message[:MAX_CHARS])
     return len(picked)
 
 

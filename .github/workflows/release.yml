@@ -25,7 +25,7 @@ concurrency:
 
 env:
   # archives are ~12 MB each and the pin changes rarely; see the cache step
-  NVIM_CACHE: ~/.cache/fast-nvim-latest
+  NVIM_CACHE: ~/.cache/fast-nvim-release
 
 jobs:
   build:
@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.NVIM_CACHE }}
-          key: nvim-linux-${{ hashFiles('src/fast_nvim_latest/platforms.py') }}
+          key: nvim-linux-${{ hashFiles('src/fast_nvim_release/platforms.py') }}
       - name: build one wheel per platform
         run: python scripts/build_wheels.py --all
       - name: validate metadata, payloads and tags
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: testpypi
-      url: https://test.pypi.org/p/fast-nvim-latest
+      url: https://test.pypi.org/p/fast-nvim-release
     permissions:
       id-token: write
       contents: read
@@ -94,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/fast-nvim-latest
+      url: https://pypi.org/p/fast-nvim-release
     permissions:
       id-token: write
       contents: read
@@ -107,7 +107,7 @@ jobs:
       - name: check that the tag matches __version__
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          version=$(python -c "import sys; sys.path.insert(0, 'src'); import fast_nvim_latest; print(fast_nvim_latest.__version__)")
+          version=$(python -c "import sys; sys.path.insert(0, 'src'); import fast_nvim_release; print(fast_nvim_release.__version__)")
           echo "tag=$tag version=$version"
           test "$tag" = "$version"
       - uses: actions/download-artifact@v4

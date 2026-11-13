@@ -1,55 +1,125 @@
-"""The platform/asset table must stay consistent and complete."""
+"""The release/platform tables must stay consistent and complete."""
 
 from __future__ import annotations
 
+import os
 import re
+from unittest import mock
 
 import pytest
 
-from fast_nvim_latest import platforms
-from fast_nvim_latest.platforms import (
-    NVIM_VERSION,
-    TARGETS,
-    host_target,
-    normalize_arch,
-    normalize_family,
+from fast_nvim_release import platforms
+from fast_nvim_release.platforms import (
+    DEFAULT_RELEASE,
+    PLATFORM_KEYS,
+    PLATFORMS,
+    RELEASE_KEYS,
+    RELEASES,
+    parse_release,
     parse_target,
 )
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
-def test_every_target_is_well_formed():
-    for key, target in TARGETS.items():
-        assert key == f"{target.family}-{target.arch}"
-        assert target.asset.endswith((".tar.gz", ".zip"))
-        assert target.archive == ("zip" if target.asset.endswith(".zip") else "tar.gz")
-        assert HEX64.match(target.sha256), key
-        assert target.size > 1_000_000, key
-        assert target.exe in ("nvim", "nvim.exe")
-        assert target.exe.endswith(".exe") == (target.family == "windows")
-        assert target.url.endswith(f"/{NVIM_VERSION}/{target.asset}"), target.url
+def test_every_release_is_well_formed():
+    for key, release in RELEASES.items():
+        assert key in RELEASE_KEYS
+        assert release.key == key
+        assert re.match(r"^v\d+\.\d+\.\d+$", release.version), key
+        assert release.version.startswith(f"v{key}."), key
+        for target in release.targets:
+            assert HEX64.match(target.sha256), target.label
+            assert target.size > 1_000_000, target.label
+            assert target.exe in ("nvim", "nvim.exe")
+            assert target.exe.endswith(".exe") == (target.family == "windows")
+            assert target.url.endswith(f"/{release.version}/{target.asset}"), target.url
 
 
-def test_assets_and_hashes_are_unique():
-    assets = [t.asset for t in TARGETS.values()]
-    hashes = [t.sha256 for t in TARGETS.values()]
-    assert len(set(assets)) == len(assets)
-    assert len(set(hashes)) == len(hashes)
+def test_the_pinned_version_table_cannot_drift():
+    assert platforms.RELEASE_VERSIONS == {key: release.version for key, release in RELEASES.items()}
+    assert RELEASE_KEYS == ["0.10", "0.11", "0.12"]
+    assert DEFAULT_RELEASE == "0.12"
 
 
-def test_all_platform_arch_combinations_are_covered():
-    combos = {(t.family, t.arch) for t in TARGETS.values()}
-    assert combos == {
-        ("linux", "x86_64"),
-        ("linux", "arm64"),
-        ("macos", "x86_64"),
-        ("macos", "arm64"),
-        ("windows", "x86_64"),
-        ("windows", "arm64"),
-    }
+def test_every_release_supports_the_common_platforms():
+    must_have = {"linux-x86_64", "linux-arm64", "macos-x86_64", "macos-arm64", "windows-x86_64"}
+    for key, release in RELEASES.items():
+        assert must_have <= set(release.assets), key
+    # Neovim only started publishing Windows-on-ARM builds in 0.11
+    assert "windows-arm64" not in RELEASES["0.10"].assets
+    assert "windows-arm64" in RELEASES["0.11"].assets
+    assert "windows-arm64" in RELEASES["0.12"].assets
 
 
+def test_missing_platforms_are_explained():
+    assert "windows-arm64" in RELEASES["0.10"].missing
+    assert "no windows-arm64 build" in RELEASES["0.10"].platform_note("windows-arm64")
+    assert RELEASES["0.12"].platform_note("windows-arm64") is None
+
+
+def test_the_arm64_glibc_outlier_is_not_bundled():
+    """0.10's arm64 build needs glibc 2.38, which would raise the wheel tag."""
+    assert RELEASES["0.10"].downloaded_not_bundled == ("linux-arm64",)
+    assert not RELEASES["0.10"].bundled("linux-arm64")
+    assert RELEASES["0.10"].bundled("linux-x86_64")
+    assert "glibc" in (RELEASES["0.10"].platform_note("linux-arm64") or "")
+    for key in ("0.11", "0.12"):
+        assert RELEASES[key].downloaded_not_bundled == ()
+
+
+def test_wheel_tags_are_unique_and_cover_every_platform():
+    tags = [platform.wheel_tag for platform in PLATFORMS.values()]
+    assert len(set(tags)) == len(tags)
+    assert set(PLATFORMS) == set(PLATFORM_KEYS)
+    assert PLATFORMS["linux-x86_64"].wheel_tag == "manylinux_2_34_x86_64"
+    assert PLATFORMS["linux-arm64"].wheel_tag == "manylinux_2_34_aarch64"
+    assert PLATFORMS["macos-x86_64"].wheel_tag == "macosx_11_0_x86_64"
+    assert PLATFORMS["macos-arm64"].wheel_tag == "macosx_11_0_arm64"
+    assert PLATFORMS["windows-x86_64"].wheel_tag == "win_amd64"
+    assert PLATFORMS["windows-arm64"].wheel_tag == "win_arm64"
+
+
+# --------------------------------------------------------------------------
+# release parsing
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        ("0.10", "0.10"),
+        ("10", "0.10"),
+        ("010", "0.10"),
+        ("v0.10.4", "0.10"),
+        ("0.10.4", "0.10"),
+        ("0.11", "0.11"),
+        ("0.12", "0.12"),
+        ("12", "0.12"),
+        ("V0.12.6", "0.12"),
+        ("latest", "0.12"),
+        ("newest", "0.12"),
+        ("", "0.12"),
+        (None, "0.12"),
+        ("auto", "0.12"),
+    ],
+)
+def test_release_parsing(spec, expected):
+    assert parse_release(spec) == expected
+
+
+def test_unknown_releases_raise_helpfully():
+    with pytest.raises(ValueError) as excinfo:
+        parse_release("0.9")
+    assert "0.10" in str(excinfo.value)
+    with pytest.raises(ValueError):
+        parse_release("banana")
+    # a patch that is not the pinned one is not silently accepted
+    with pytest.raises(ValueError):
+        parse_release("0.12.1")
+
+
+# --------------------------------------------------------------------------
+# platform parsing
+# --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "spec, expected",
     [
@@ -71,13 +141,27 @@ def test_all_platform_arch_combinations_are_covered():
 def test_alias_parsing(spec, expected):
     target = parse_target(spec)
     assert target.family == expected
-    assert target.key in TARGETS
+    assert target.key in PLATFORMS
 
 
 def test_explicit_arch_wins_for_other_families():
     assert parse_target("windows", "arm64").key == "windows-arm64"
     assert parse_target("mac", "x86_64").key == "macos-x86_64"
     assert parse_target("linux", "aarch64").key == "linux-arm64"
+
+
+def test_the_release_is_carried_on_the_target():
+    target = parse_target("linux", "x86_64", "0.10")
+    assert target.release_key == "0.10"
+    assert target.nvim_version == "v0.10.4"
+    assert target.label == "0.10/linux-x86_64"
+    assert target.sha256 == RELEASES["0.10"].assets["linux-x86_64"][0]
+
+
+def test_a_release_without_a_platform_says_so():
+    with pytest.raises(ValueError) as excinfo:
+        parse_target("windows", "arm64", "0.10")
+    assert "no windows-arm64 build" in str(excinfo.value)
 
 
 def test_conflicting_arch_is_an_error():
@@ -90,34 +174,38 @@ def test_unknown_names_raise_helpful_errors():
         parse_target("plan9")
     assert "linux" in str(excinfo.value)
     with pytest.raises(ValueError):
-        normalize_arch("sparc")
+        platforms.normalize_arch("sparc")
     with pytest.raises(ValueError):
-        normalize_family("haiku")
+        platforms.normalize_family("haiku")
 
 
 def test_auto_uses_this_machine():
-    host = host_target()
-    if host is None:  # pragma: no cover
+    here = platforms.host_platform()
+    if here is None:  # pragma: no cover
         pytest.skip("unknown host")
-    assert parse_target(None) is host
-    assert parse_target("auto") is host
-    assert parse_target("host") is host
+    target = parse_target(None)
+    assert target.key == here.key
+    assert target.release_key == DEFAULT_RELEASE
+    assert parse_target("auto").key == here.key
+    assert parse_target("host").key == here.key
 
 
-def test_key_collisions_are_impossible():
-    assert len(TARGETS) == 6
+def test_host_target_speaks_for_the_requested_release():
+    here = platforms.host_platform()
+    if here is None:  # pragma: no cover
+        pytest.skip("unknown host")
+    assert platforms.host_target().release_key == DEFAULT_RELEASE
+    if RELEASES["0.10"].target(here.key) is not None:
+        assert platforms.host_target("0.10").release_key == "0.10"
+    assert platforms.is_cross(platforms.host_target()) is False
 
 
-def test_wheel_tags_are_unique_and_match_the_binaries():
-    """Verified against the real binaries: glibc 2.34, macOS 11.0."""
-    assert TARGETS["linux-x86_64"].wheel_tag == "manylinux_2_34_x86_64"
-    assert TARGETS["linux-arm64"].wheel_tag == "manylinux_2_34_aarch64"
-    assert TARGETS["macos-x86_64"].wheel_tag == "macosx_11_0_x86_64"
-    assert TARGETS["macos-arm64"].wheel_tag == "macosx_11_0_arm64"
-    assert TARGETS["windows-x86_64"].wheel_tag == "win_amd64"
-    assert TARGETS["windows-arm64"].wheel_tag == "win_arm64"
-    tags = [target.wheel_tag for target in TARGETS.values()]
-    assert len(set(tags)) == len(tags)
+def test_cross_platform_is_decided_per_platform_not_per_release():
+    here = platforms.host_platform()
+    if here is None:  # pragma: no cover
+        pytest.skip("unknown host")
+    # another release on this machine is not "cross"
+    assert platforms.is_cross(platforms.host_target("0.10")) is False
 
 
 # --------------------------------------------------------------------------
@@ -125,6 +213,7 @@ def test_wheel_tags_are_unique_and_match_the_binaries():
 # --------------------------------------------------------------------------
 def test_unknown_host_architectures_are_not_guessed(monkeypatch):
     monkeypatch.setattr(platforms.platform, "machine", lambda: "riscv64")
+    assert platforms.host_platform() is None
     assert platforms.host_target() is None
     with pytest.raises(ValueError) as excinfo:
         platforms.parse_target(None)
@@ -138,34 +227,31 @@ def test_32_bit_and_unknown_machines_are_rejected(monkeypatch, machine):
     monkeypatch.setattr(platforms.platform, "machine", lambda: machine)
     if platforms._host_family() is None:  # pragma: no cover - exotic host
         pytest.skip("unknown host family")
-    assert platforms.host_target() is None
+    assert platforms.host_platform() is None
 
 
 @pytest.mark.parametrize("machine", ["x86_64", "AMD64", "x86-64", "em64t"])
 def test_amd64_spellings_mean_x86_64(monkeypatch, machine):
     monkeypatch.setattr(platforms.platform, "machine", lambda: machine)
-    host = platforms.host_target()
-    if host is None:  # pragma: no cover - exotic host
+    here = platforms.host_platform()
+    if here is None:  # pragma: no cover - exotic host
         pytest.skip("unknown host family")
-    assert host.arch == "x86_64"
+    assert here.arch == "x86_64"
 
 
 @pytest.mark.parametrize("machine", ["arm64", "aarch64"])
 def test_arm_spellings_mean_arm64(monkeypatch, machine):
     monkeypatch.setattr(platforms.platform, "machine", lambda: machine)
-    host = platforms.host_target()
-    if host is None:  # pragma: no cover - exotic host
+    here = platforms.host_platform()
+    if here is None:  # pragma: no cover - exotic host
         pytest.skip("unknown host family")
-    assert host.arch == "arm64"
+    assert here.arch == "arm64"
 
 
 # --------------------------------------------------------------------------
 # emulated interpreters: warn, never silently install the wrong thing
 # --------------------------------------------------------------------------
 def _emulation(system, machine, env=None, rosetta=False):
-    import os
-    from unittest import mock
-
     with (
         mock.patch.object(platforms.sys, "platform", system),
         mock.patch.object(platforms.platform, "machine", lambda: machine),
@@ -182,10 +268,10 @@ def test_rosetta_python_on_apple_silicon_is_detected():
     assert "arm64" in note
     # and the build we install matches the interpreter, like pip's wheel does
     with (
-        __import__("unittest").mock.patch.object(platforms.sys, "platform", "darwin"),
-        __import__("unittest").mock.patch.object(platforms.platform, "machine", lambda: "x86_64"),
+        mock.patch.object(platforms.sys, "platform", "darwin"),
+        mock.patch.object(platforms.platform, "machine", lambda: "x86_64"),
     ):
-        assert platforms.host_target().key == "macos-x86_64"
+        assert platforms.host_platform().key == "macos-x86_64"
 
 
 def test_x64_python_on_windows_arm64_is_detected():

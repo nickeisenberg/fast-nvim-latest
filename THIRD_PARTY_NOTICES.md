@@ -5,14 +5,25 @@
 This package redistributes unmodified builds of
 [Neovim](https://github.com/neovim/neovim) from its official GitHub releases.
 
+The release lines shipped are pinned in `src/fast_nvim_release/platforms.py`
+(`RELEASES`) and recorded in `fast_nvim_release/_nvim/BUILD_INFO.json` inside
+the wheel. Each release line is pinned to one patch release:
+
+| Release | Neovim version |
+| --- | --- |
+| 0.10 | v0.10.4 |
+| 0.11 | v0.11.7 |
+| 0.12 | v0.12.6 |
+
 * Neovim: <https://github.com/neovim/neovim>
-* Release used: see `NVIM_VERSION` in `src/fast_nvim_latest/platforms.py` and
-  `fast_nvim_latest/_nvim/BUILD_INFO.json` inside the wheel.
 * License: Apache License 2.0, except for parts contributed under the Vim
-  license. The full text is shipped as `fast_nvim_latest/_nvim/LICENSE.nvim.txt`
-  (fetched from the pinned release tag by `scripts/fetch_nvim.py`), and the
-  Vim license is also present in the runtime as
-  `share/nvim/runtime/doc/uganda.txt`.
+  license. The full text for each release line ships as
+  `fast_nvim_release/_nvim/LICENSE.nvim-<release>.txt` (fetched from that
+  release's tag by `scripts/fetch_nvim.py`), and the Vim license is also present
+  in the runtime as `share/nvim/runtime/doc/uganda.txt`.
+* Each vendored build is extracted from the release archive whose sha256 is
+  pinned in `platforms.py`; the same checksum is recorded in that build's
+  `BUILD_INFO.json`.
 
 ## Bundled third-party components
 
@@ -23,9 +34,8 @@ Their licenses are documented by the Neovim project in the `doc/` tree of the
 runtime and in the upstream repositories of those components.
 
 No changes are made to the vendored binaries: `scripts/fetch_nvim.py` extracts
-`bin/`, `lib/nvim/` and `share/nvim/runtime/` from the published archive and
-records the archive's sha256 in `BUILD_INFO.json`.
+`bin/`, `lib/nvim/` and `share/nvim/runtime/` from each published archive.
 
-## fast-nvim-latest itself
+## fast-nvim-release itself
 
 MIT licensed; see `LICENSE`.

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Vendor Neovim release archives into ``src/fast_nvim_latest/_nvim/<target>/``.
+"""Vendor Neovim release archives into ``src/fast_nvim_release/_nvim/``.
 
 Examples
 --------
-    python scripts/fetch_nvim.py                     # the platform we're on
+    python scripts/fetch_nvim.py                     # every release, this platform
+    python scripts/fetch_nvim.py --release 0.12      # one release line
     python scripts/fetch_nvim.py --platform windows  # cross-vendor for Windows
     python scripts/fetch_nvim.py --all               # every supported platform
     python scripts/fetch_nvim.py --list
@@ -11,6 +12,10 @@ Examples
 Only ``bin/``, ``lib/nvim/`` and ``share/nvim/runtime/`` are kept: those are
 what Neovim needs to run, and they let the binary find its runtime relative to
 its own path (``../share/nvim/runtime``).
+
+Builds a release lists as ``downloaded_not_bundled`` (0.10 on linux-arm64,
+whose glibc floor would break the arm64 wheel tag) are skipped unless
+``--include-download-only`` is given.
 """
 
 from __future__ import annotations
@@ -22,22 +27,23 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_latest import bundle  # noqa: E402
-from fast_nvim_latest.platforms import (  # noqa: E402
-    NVIM_VERSION,
-    TARGET_KEYS,
-    TARGETS,
+from fast_nvim_release import bundle  # noqa: E402
+from fast_nvim_release.platforms import (  # noqa: E402
+    RELEASE_KEYS,
+    RELEASES,
     Target,
+    get_release,
+    host_platform,
     host_target,
     parse_target,
 )
 
-DEFAULT_DEST = ROOT / "src" / "fast_nvim_latest" / "_nvim"
+DEFAULT_DEST = ROOT / "src" / "fast_nvim_release" / "_nvim"
 LICENSE_URL = "https://raw.githubusercontent.com/neovim/neovim/{}/LICENSE.txt"
 
 #: What :func:`vendor` did for one target.
@@ -82,30 +88,41 @@ def _dir_size(path: Path) -> int:
     return total
 
 
-def _fetch_license(dest: Path, offline: bool) -> Optional[Path]:
-    out = dest / "LICENSE.nvim.txt"
-    if out.is_file():
-        return out
-    if offline:
-        return None
-    url = LICENSE_URL.format(NVIM_VERSION)
-    try:
-        with urllib.request.urlopen(
-            urllib.request.Request(url, headers={"User-Agent": bundle.USER_AGENT}),
-            timeout=60,
-        ) as response:
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(response.read())
-        return out
-    except (urllib.error.URLError, OSError) as exc:
-        sys.stderr.write(f"warning: could not fetch Neovim's LICENSE.txt: {exc}\n")
-        return None
+def license_file(dest_root: Path, release_key: str) -> Path:
+    """Where one release's copy of Neovim's license lives in the source tree."""
+    return dest_root / f"LICENSE.nvim-{release_key}.txt"
+
+
+def _fetch_licenses(
+    dest_root: Path, release_keys: List[str], offline: bool
+) -> List[Tuple[str, Path]]:
+    """Make sure every vendored release ships its own LICENSE.txt."""
+    missing: List[Tuple[str, Path]] = []
+    for release_key in release_keys:
+        out = license_file(dest_root, release_key)
+        if out.is_file():
+            continue
+        if offline:
+            missing.append((release_key, out))
+            continue
+        url = LICENSE_URL.format(RELEASES[release_key].version)
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(url, headers={"User-Agent": bundle.USER_AGENT}),
+                timeout=60,
+            ) as response:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(response.read())
+        except (urllib.error.URLError, OSError) as exc:
+            sys.stderr.write(f"warning: could not fetch {url}: {exc}\n")
+            missing.append((release_key, out))
+    return missing
 
 
 def _needs_refresh(final: Path, target: Target) -> Optional[str]:
     """Why an existing vendored copy is out of date, or ``None`` if it is fine.
 
-    Without this, bumping ``NVIM_VERSION`` and re-running the script would
+    Without this, bumping a pinned release and re-running the script would
     keep the old binary while the index claimed the new version.
     """
     try:
@@ -114,7 +131,7 @@ def _needs_refresh(final: Path, target: Target) -> Optional[str]:
         return "it has no BUILD_INFO.json"
     if not isinstance(info, dict):
         return "its BUILD_INFO.json is not an object"
-    if info.get("nvim_version") != NVIM_VERSION:
+    if info.get("nvim_version") != target.nvim_version:
         return "it holds {}".format(info.get("nvim_version") or "an unknown build")
     if target.sha256 and info.get("sha256") != target.sha256:
         return "its pinned archive checksum changed"
@@ -128,14 +145,14 @@ def vendor(
     offline: bool = False,
     force: bool = False,
 ) -> str:
-    final = dest_root / target.key
+    final = dest_root / target.release_key / target.key
     exe = final / "bin" / target.exe
     if exe.is_file() and not force:
         stale = _needs_refresh(final, target)
         if stale is None:
-            say(f"  {target.key} already vendored ({bundle.human_size(_dir_size(final))})")
+            say(f"  {target.label} already vendored ({bundle.human_size(_dir_size(final))})")
             return SKIPPED
-        say(f"  re-vendoring {target.key}: {stale}")
+        say(f"  re-vendoring {target.label}: {stale}")
 
     say(f"  fetching {target.asset}")
     try:
@@ -144,7 +161,8 @@ def vendor(
         sys.stderr.write(f"error: {exc}\n")
         return FAILED
 
-    say(f"  extracting into {final.relative_to(ROOT) if final.is_relative_to(ROOT) else final}")
+    shown = final.relative_to(ROOT) if final.is_relative_to(ROOT) else final
+    say(f"  extracting into {shown}")
     try:
         bundle.extract_archive(target, archive, final)
     except bundle.FastNvimError as exc:
@@ -152,21 +170,22 @@ def vendor(
         return FAILED
 
     nvim_version: Optional[str] = None
-    if target == host_target():
+    if target == host_target(target.release_key):
         try:
             nvim_version = bundle.neovim_version(final / "bin" / target.exe)
         except bundle.FastNvimError as exc:
             sys.stderr.write(f"error: vendored binary does not run: {exc}\n")
             return FAILED
-        if NVIM_VERSION not in nvim_version:
+        if target.nvim_version not in nvim_version:
             sys.stderr.write(
-                f"error: vendored binary reports {nvim_version!r}, expected {NVIM_VERSION}\n"
+                f"error: vendored binary reports {nvim_version!r}, expected {target.nvim_version}\n"
             )
             return FAILED
 
     info = {
+        "release": target.release_key,
         "target": target.key,
-        "nvim_version": NVIM_VERSION,
+        "nvim_version": target.nvim_version,
         "asset": target.asset,
         "url": target.url,
         "sha256": target.sha256,
@@ -176,32 +195,55 @@ def vendor(
         "vendored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (final / "BUILD_INFO.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
-    say("  ok {} ({})".format(target.key, bundle.human_size(info["installed_size"])))
+    say("  ok {} ({})".format(target.label, bundle.human_size(info["installed_size"])))
     return VENDORED
 
 
 def write_index(dest_root: Path) -> None:
-    bundles = {}
-    for key in TARGET_KEYS:
-        path = dest_root / key / "BUILD_INFO.json"
-        if path.is_file():
-            try:
-                bundles[key] = json.loads(path.read_text(encoding="utf-8"))
-            except ValueError:
-                continue
+    releases: Dict[str, object] = {}
+    for release_key in RELEASE_KEYS:
+        builds: Dict[str, object] = {}
+        for target in RELEASES[release_key].targets:
+            path = dest_root / release_key / target.key / "BUILD_INFO.json"
+            if path.is_file():
+                try:
+                    builds[target.key] = json.loads(path.read_text(encoding="utf-8"))
+                except ValueError:
+                    continue
+        if builds:
+            releases[release_key] = {
+                "nvim_version": RELEASES[release_key].version,
+                "platforms": builds,
+            }
     index = {
-        "nvim_version": NVIM_VERSION,
+        "nvim_versions": {key: RELEASES[key].version for key in RELEASE_KEYS},
+        "default_release": RELEASE_KEYS[-1],
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "bundles": bundles,
+        "releases": releases,
         "installed_size": _dir_size(dest_root) if dest_root.is_dir() else 0,
     }
     dest_root.mkdir(parents=True, exist_ok=True)
     (dest_root / "BUILD_INFO.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
 
 
+def _platforms_for(release_key: str, dest_root: Path) -> List[str]:
+    return [
+        t.key
+        for t in RELEASES[release_key].targets
+        if (dest_root / release_key / t.key / "bin" / t.exe).is_file()
+    ]
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Vendor the Neovim release binaries into the fast-nvim-latest package."
+        description="Vendor Neovim release binaries into the fast-nvim-release package."
+    )
+    parser.add_argument(
+        "--release",
+        action="append",
+        default=[],
+        metavar="RELEASE",
+        help="release line to vendor (0.10, 0.11, 0.12); repeatable (default: all)",
     )
     parser.add_argument(
         "--platform",
@@ -211,74 +253,116 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="linux/mac/windows or an exact build (linux-arm64); repeatable",
     )
     parser.add_argument("--arch", help="x86_64/amd64 or arm64/aarch64")
-    parser.add_argument("--all", action="store_true", help="vendor every supported platform")
+    parser.add_argument("--all", action="store_true", help="vendor every platform")
     parser.add_argument("--dest", default=str(DEFAULT_DEST), help="destination directory")
     parser.add_argument("--force", action="store_true", help="re-vendor even if present")
     parser.add_argument("--offline", action="store_true", help="use cached archives only")
-    parser.add_argument("--list", action="store_true", help="list supported platforms")
+    parser.add_argument("--list", action="store_true", help="list supported releases/platforms")
+    parser.add_argument(
+        "--include-download-only",
+        action="store_true",
+        help="also vendor builds that are normally fetched on demand",
+    )
     args = parser.parse_args(argv)
 
     if args.list:
-        host = host_target()
-        for key in TARGET_KEYS:
-            target = TARGETS[key]
-            if bundle.has_bundled(target):
-                state = "vendored"
-            elif bundle.cached_archive(target).is_file():
-                state = "cached"
-            else:
-                state = "-"
-            say(
-                "{:<16} {:<44} {:<9} {}".format(
-                    key,
-                    target.asset,
-                    state,
-                    "host" if host and key == host.key else "",
+        here = host_platform()
+        for release_key in RELEASE_KEYS:
+            release = RELEASES[release_key]
+            say(f"{release_key} ({release.version})")
+            for target in release.targets:
+                state = "vendored" if bundle.has_bundled(target) else "-"
+                if state != "vendored" and bundle.cached_archive(target).is_file():
+                    state = "cached"
+                note = release.platform_note(target.key)
+                say(
+                    "  {:<16} {:<30} {:<9} {}{}".format(
+                        target.key,
+                        target.asset,
+                        state,
+                        "host" if here and target.key == here.key else "",
+                        f"  [{note}]" if note else "",
+                    )
                 )
-            )
-        say(f"\nNeovim {NVIM_VERSION}  cache: {bundle.cache_root()}")
+        say(f"\ncache: {bundle.cache_root()}")
         return 0
 
     dest_root = Path(args.dest).expanduser().resolve()
 
-    if args.all:
-        targets = [TARGETS[key] for key in TARGET_KEYS]
-    elif args.platform:
-        targets = [parse_target(spec, args.arch) for spec in args.platform]
-    else:
-        targets = [parse_target(None, args.arch)]
+    release_keys = list(dict.fromkeys(get_release(spec).key for spec in args.release))
+    if not release_keys:
+        release_keys = list(RELEASE_KEYS)
 
-    say(f"fast-nvim-latest: vendoring Neovim {NVIM_VERSION} into {dest_root}")
+    targets: List[Target] = []
+    for release_key in release_keys:
+        wanted = RELEASES[release_key]
+        if args.all:
+            platform_keys = [t.key for t in wanted.targets]
+        elif args.platform:
+            # resolve the platform against a release that has every build, then
+            # let the per-release loop decide what exists
+            platform_keys = [parse_target(spec, args.arch).key for spec in args.platform]
+        else:
+            here = host_platform()
+            if here is None:
+                sys.stderr.write("error: cannot detect this platform; pass --platform\n")
+                return 1
+            platform_keys = [here.key]
+        for platform_key in platform_keys:
+            target = wanted.target(platform_key)
+            if target is None:
+                # Every release is vendored by default, so a platform that one
+                # line never had (0.10 has no Windows-on-ARM build) must not
+                # abort the whole run. Asking for it explicitly still fails.
+                if args.release:
+                    sys.stderr.write(
+                        f"error: Neovim {wanted.version} has no {platform_key} build\n"
+                    )
+                    return 1
+                say(
+                    f"  skipping {release_key}/{platform_key}: {wanted.platform_note(platform_key)}"
+                )
+                continue
+            if not wanted.bundled(platform_key) and not args.include_download_only:
+                say(f"  skipping {target.label}: {wanted.platform_note(platform_key)}")
+                continue
+            targets.append(target)
+
+    say(f"fast-nvim-release: vendoring {len(targets)} build(s) into {dest_root}")
     bundle.remove_stale_backups(dest_root)
     results = {}
     for target in targets:
-        say(f"{target.key}:")
-        results[target.key] = vendor(target, dest_root, offline=args.offline, force=args.force)
+        say(f"{target.label}:")
+        results[target.label] = vendor(target, dest_root, offline=args.offline, force=args.force)
 
-    license_path = _fetch_license(dest_root, args.offline)
+    vendored_releases = [key for key in release_keys if _platforms_for(key, dest_root)]
+    missing_licenses = _fetch_licenses(dest_root, vendored_releases, args.offline)
     write_index(dest_root)
 
-    vendored = [
-        key for key in TARGET_KEYS if (dest_root / key / "bin" / TARGETS[key].exe).is_file()
-    ]
     say("")
-    say("vendored: {}".format(", ".join(vendored) or "none"))
-    say(f"size on disk: {bundle.human_size(_dir_size(dest_root))}")
-
-    failed = [key for key, result in results.items() if result == FAILED]
-    if license_path is None:
-        sys.stderr.write(
-            "error: Neovim's LICENSE.txt is missing from {}; the wheel must ship it\n"
-            "  (it is fetched from {}, or drop a copy there)\n".format(
-                dest_root / "LICENSE.nvim.txt", LICENSE_URL.format(NVIM_VERSION)
+    for release_key in vendored_releases:
+        say(
+            "vendored {} ({}): {}".format(
+                release_key,
+                RELEASES[release_key].version,
+                ", ".join(_platforms_for(release_key, dest_root)),
             )
         )
-        failed.append("LICENSE.nvim.txt")
+    say(f"size on disk: {bundle.human_size(_dir_size(dest_root))}")
+
+    failed = [label for label, result in results.items() if result == FAILED]
+    for release_key, path in missing_licenses:
+        sys.stderr.write(
+            f"error: Neovim's LICENSE.txt for {release_key} is missing\n"
+            f"  from {path}; the wheel must ship it (it is fetched from\n"
+            f"  {LICENSE_URL.format(RELEASES[release_key].version)}, or drop a copy there)\n"
+        )
+        failed.append(path.name)
     if failed:
         sys.stderr.write("failed: {}\n".format(", ".join(failed)))
         return 1
 
-    say("next: python -m build --wheel   (tag with FAST_NVIM_LATEST_PLAT_TAG for cross builds)")
+    say("next: python -m build --wheel   (tag with FAST_NVIM_RELEASE_PLAT_TAG for cross builds)")
     return 0
 
 

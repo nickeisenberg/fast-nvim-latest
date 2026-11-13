@@ -1,13 +1,14 @@
-"""Build hook: tag the wheel with the platform of the vendored Neovim build.
+"""Build hook: tag the wheel with the platform of the vendored Neovim builds.
 
-A wheel can only carry one platform's binary.  Every ``fast-nvim-latest`` release
-therefore publishes *one wheel per platform* under the same version, and pip
-picks the one that matches the machine it is installing on -- the same
-approach ``ruff`` and ``uv`` use.
+A wheel can only carry one platform's binaries.  Every ``fast-nvim-release``
+release therefore publishes *one wheel per platform* under the same version,
+and each of those wheels carries every supported Neovim release line for that
+platform -- pip picks the one that matches the machine it is installing on,
+the same approach ``ruff`` and ``uv`` use.
 
 The platform tag is normally derived from the machine doing the build, but it
-must match the *vendored* binary, so CI sets ``FAST_NVIM_LATEST_PLAT_TAG`` when it
-builds a wheel for another platform.
+must match the *vendored* binaries, so CI sets ``FAST_NVIM_RELEASE_PLAT_TAG``
+when it builds a wheel for another platform.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import List, Tuple
 
 from setuptools import setup
 from setuptools.dist import Distribution
@@ -28,8 +30,8 @@ except ImportError:  # pragma: no cover - older toolchains
 class BinaryDistribution(Distribution):
     """Tell setuptools this project is not pure Python.
 
-    The "extension modules" are really a vendored executable, but claiming
-    them keeps the package files at the root of the wheel (platlib) instead of
+    The "extension modules" are really vendored executables, but claiming them
+    keeps the package files at the root of the wheel (platlib) instead of
     hiding them in ``<name>.data/purelib/``.
     """
 
@@ -40,78 +42,85 @@ class BinaryDistribution(Distribution):
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_latest.platforms import TARGETS, host_target  # noqa: E402  (stdlib only)
+from fast_nvim_release.platforms import PLATFORMS, RELEASES, host_platform  # noqa: E402
 
-BUNDLE_ROOT = ROOT / "src" / "fast_nvim_latest" / "_nvim"
+BUNDLE_ROOT = ROOT / "src" / "fast_nvim_release" / "_nvim"
+
+BY_TAG = {platform.wheel_tag: platform for platform in PLATFORMS.values()}
 
 
-def platform_tag():
-    """Wheel tag for the vendored build (overridable for cross builds).
-
-    Neovim's official Linux builds need glibc >= 2.34; verify with
-    ``strings bin/nvim | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1``.
-    """
-    override = os.environ.get("FAST_NVIM_LATEST_PLAT_TAG", "").strip()
+def platform_tag() -> str:
+    """Wheel tag for the vendored builds (overridable for cross builds)."""
+    override = os.environ.get("FAST_NVIM_RELEASE_PLAT_TAG", "").strip()
     if override:
         return override
-    host = host_target()
-    if host is None:  # pragma: no cover - exotic build host
+    here = host_platform()
+    if here is None:  # pragma: no cover - exotic build host
         raise SystemExit(
-            "fast-nvim-latest: don't know how to tag a wheel for "
-            f"{sys.platform!r}; set FAST_NVIM_LATEST_PLAT_TAG"
+            "fast-nvim-release: don't know how to tag a wheel for "
+            f"{sys.platform!r}; set FAST_NVIM_RELEASE_PLAT_TAG"
         )
-    return host.wheel_tag
+    return here.wheel_tag
 
 
-def vendored_bundles():
+def vendored_bundles() -> List[Tuple[str, str]]:
+    """``(release, platform)`` pairs that actually have a binary on disk."""
+    found: List[Tuple[str, str]] = []
     if not BUNDLE_ROOT.is_dir():
-        return []
-    return sorted(
-        path.name
-        for path in BUNDLE_ROOT.iterdir()
-        if path.is_dir() and any((path / "bin").glob("nvim*"))
-    )
+        return found
+    for release_key in RELEASES:
+        directory = BUNDLE_ROOT / release_key
+        if not directory.is_dir():
+            continue
+        for target in RELEASES[release_key].targets:
+            candidate = directory / target.key / "bin"
+            if candidate.is_dir() and any(candidate.glob("nvim*")):
+                found.append((release_key, target.key))
+    return found
 
 
 class PlatformWheel(bdist_wheel):
-    """A binary wheel tagged for the vendored Neovim build."""
+    """A binary wheel tagged for the vendored Neovim builds."""
 
     def get_tag(self):
         return "py3", "none", platform_tag()
 
     def run(self):
         bundles = vendored_bundles()
-        if not bundles and os.environ.get("FAST_NVIM_LATEST_ALLOW_EMPTY_BIN") != "1":
+        if not bundles and os.environ.get("FAST_NVIM_RELEASE_ALLOW_EMPTY_BIN") != "1":
             raise SystemExit(
-                f"\nfast-nvim-latest: no vendored Neovim binary found in {BUNDLE_ROOT}.\n"
-                "  Vendor one first:  python scripts/fetch_nvim.py\n"
-                "  (or set FAST_NVIM_LATEST_ALLOW_EMPTY_BIN=1 to build a binary-less wheel)\n"
+                f"\nfast-nvim-release: no vendored Neovim binary found in {BUNDLE_ROOT}.\n"
+                "  Vendor them first:  python scripts/fetch_nvim.py\n"
+                "  (or set FAST_NVIM_RELEASE_ALLOW_EMPTY_BIN=1 to build a binary-less wheel)\n"
             )
         tag = platform_tag()
-        expected = {t.wheel_tag: t.key for t in TARGETS.values()}.get(tag)
-        if expected and expected not in bundles:
-            if os.environ.get("FAST_NVIM_LATEST_PLAT_TAG", "").strip():
-                advice = (
-                    "  FAST_NVIM_LATEST_PLAT_TAG asks for that tag, but the vendored "
-                    "build(s) are {}.\n"
-                    "  Vendor the matching one: python scripts/fetch_nvim.py "
-                    "--platform {}\n".format(", ".join(bundles), expected)
+        expected = BY_TAG.get(tag)
+        if expected is not None:
+            if bundles and expected.key not in {platform for _, platform in bundles}:
+                names = ", ".join(f"{release}/{platform}" for release, platform in bundles)
+                if os.environ.get("FAST_NVIM_RELEASE_PLAT_TAG", "").strip():
+                    advice = (
+                        "  FAST_NVIM_RELEASE_PLAT_TAG asks for that tag, but the vendored "
+                        f"build(s) are {names}.\n"
+                        "  Vendor the matching one: python scripts/fetch_nvim.py "
+                        f"--platform {expected.key}\n"
+                    )
+                else:
+                    advice = (
+                        "  Set FAST_NVIM_RELEASE_PLAT_TAG explicitly if you know\n"
+                        "  what you are doing.\n"
+                    )
+                raise SystemExit(
+                    f"\nfast-nvim-release: wheel tag {tag!r} does not match the vendored "
+                    f"build(s) {names}.\n{advice}"
                 )
-            else:
-                advice = (
-                    "  Set FAST_NVIM_LATEST_PLAT_TAG explicitly if you know what you are doing.\n"
+        for release_key, _ in bundles:
+            licence = BUNDLE_ROOT / f"LICENSE.nvim-{release_key}.txt"
+            if not licence.is_file():
+                raise SystemExit(
+                    f"\nfast-nvim-release: {licence} is missing.\n"
+                    "  It is tracked in git; restore it or run scripts/fetch_nvim.py\n"
                 )
-            raise SystemExit(
-                "\nfast-nvim-latest: wheel tag {!r} does not match the vendored "
-                "build(s) {}.\n{}".format(tag, ", ".join(bundles), advice)
-            )
-        if bundles and not (BUNDLE_ROOT / "LICENSE.nvim.txt").is_file():
-            raise SystemExit(
-                "\nfast-nvim-latest: {} is missing.\n"
-                "  It is tracked in git; restore it or run python scripts/fetch_nvim.py\n".format(
-                    BUNDLE_ROOT / "LICENSE.nvim.txt"
-                )
-            )
         super().run()
 
 

@@ -4,13 +4,13 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fast-nvim-latest"
-description = "Neovim, shipped in a pip wheel: one install, one setup command."
+name = "fast-nvim-release"
+description = "Neovim releases, shipped in a pip wheel: one install, one setup command."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
-authors = [{ name = "fast-nvim-latest contributors" }]
+authors = [{ name = "fast-nvim-release contributors" }]
 keywords = ["neovim", "nvim", "editor", "binary", "wheels", "vim"]
 dynamic = ["version"]
 dependencies = []
@@ -28,12 +28,12 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nickeisenberg/fast-nvim-latest"
-Issues = "https://github.com/nickeisenberg/fast-nvim-latest/issues"
-Source = "https://github.com/nickeisenberg/fast-nvim-latest"
+Homepage = "https://github.com/nickeisenberg/fast-nvim-release"
+Issues = "https://github.com/nickeisenberg/fast-nvim-release/issues"
+Source = "https://github.com/nickeisenberg/fast-nvim-release"
 
 [project.scripts]
-fast-nvim-latest = "fast_nvim_latest.cli:main"
+fast-nvim-release = "fast_nvim_release.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -43,7 +43,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.dynamic]
-version = { attr = "fast_nvim_latest.__version__" }
+version = { attr = "fast_nvim_release.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

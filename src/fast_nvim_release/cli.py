@@ -1,4 +1,4 @@
-"""Command line interface: ``fast-nvim-latest <command>``."""
+"""Command line interface: ``fast-nvim-release <command>``."""
 
 from __future__ import annotations
 
@@ -10,28 +10,33 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, NoReturn, Optional, Sequence, Tuple
+from typing import Dict, List, NoReturn, Optional, Sequence, Tuple
 
 from . import __version__, bundle
 from .bundle import FastNvimError
 from .platforms import (
-    NVIM_VERSION,
-    TARGET_KEYS,
-    TARGETS,
+    DEFAULT_RELEASE,
+    RELEASE_KEYS,
+    RELEASES,
     Target,
     emulation,
     emulation_note,
-    host_target,
+    get_release,
+    host_platform,
+    is_cross,
+    looks_like_release,
+    parse_release,
     parse_target,
 )
 
-PROG = "fast-nvim-latest"
+PROG = "fast-nvim-release"
 
 EXAMPLES = """examples:
-  pip install fast-nvim-latest
-  fast-nvim-latest setup                 # ~/.local/bin/nvim + runtime
-  fast-nvim-latest setup windows --prefix ./dist-win
-  fast-nvim-latest run -- --version
+  pip install fast-nvim-release
+  fast-nvim-release setup                 # newest bundled release into ~/.local
+  fast-nvim-release setup 0.10            # an older Neovim line
+  fast-nvim-release setup 0.12 windows --prefix ./dist-win
+  fast-nvim-release run 0.10 -- --version
 """
 
 
@@ -95,7 +100,7 @@ def _progress_printer(target: Target):
 def _origin(target: Target) -> Tuple[str, Optional[Path]]:
     """Where a build would come from, without fetching anything."""
     if bundle.has_bundled(target):
-        return "pip wheel", bundle.bundle_path(target.key)
+        return "pip wheel", bundle.bundle_path(target.release_key, target.key)
     tree = bundle.cached_tree(target)
     if (tree / "bin" / target.exe).is_file():
         return "cache", tree
@@ -105,58 +110,95 @@ def _origin(target: Target) -> Tuple[str, Optional[Path]]:
     return "download", None
 
 
+def _looks_numeric(value: str) -> bool:
+    """True for input the user almost certainly meant as a release."""
+    text = value.strip().lower()
+    if text.startswith("v"):
+        text = text[1:]
+    return bool(text) and text[0].isdigit()
+
+
+def _split_selectors(selectors: Sequence[str]) -> Tuple[str, Optional[str]]:
+    """Classify positional arguments into ``(release, platform)``.
+
+    ``setup 0.10``, ``setup windows``, ``setup 0.10 windows`` and
+    ``setup windows 0.10`` all work; order does not matter.
+    """
+    release_key: Optional[str] = None
+    platform_spec: Optional[str] = None
+    for value in selectors:
+        if looks_like_release(value) or _looks_numeric(value):
+            # a numeric argument is a release even when it is not one we know,
+            # so the error says "unknown Neovim release", not "unknown platform"
+            if release_key is not None:
+                fail(f"two releases given ({release_key}, {parse_release(value)})")
+            release_key = parse_release(value)
+            continue
+        if platform_spec is not None:
+            fail(f"two platforms given ({platform_spec}, {value})")
+        platform_spec = value
+    return release_key or DEFAULT_RELEASE, platform_spec
+
+
+def _installed_summary(prefix: Path) -> str:
+    builds = bundle.installed_targets(prefix)
+    if not builds:
+        return "nothing"
+    return ", ".join(f"{t.release.display} ({t.key})" for t in builds)
+
+
 # --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
 def cmd_setup(args: argparse.Namespace) -> int:
     if args.list:
-        return _list_targets()
+        return _list_releases()
 
-    target = parse_target(args.platform, args.arch)
-    prefix = Path(args.prefix).expanduser() if args.prefix else bundle.default_prefix()
+    release_key, platform_spec = _split_selectors(args.selectors)
+    target = parse_target(platform_spec, args.arch, release_key)
+    prefix = bundle.normalize(args.prefix) if args.prefix else bundle.default_prefix()
 
-    cross = target != host_target()
+    cross = is_cross(target)
     explicit_location = bool(args.prefix) or bool(
-        os.environ.get("FAST_NVIM_LATEST_PREFIX", "").strip()
+        os.environ.get("FAST_NVIM_RELEASE_PREFIX", "").strip()
+        or os.environ.get("FAST_NVIM_LATEST_PREFIX", "").strip()
     )
 
     if cross and not explicit_location:
         fail(
             f"{target.key} is not the platform you are on.\n"
             "  Installing another platform's binary needs an explicit location, e.g.\n"
-            f"  {PROG} setup {target.family} --prefix ./nvim-{target.key}"
+            f"  {PROG} setup {target.release_key} {target.family} "
+            f"--prefix ./nvim-{target.key}"
         )
 
+    managed = bundle.is_managed(prefix, target.release_key, target.key)
+    others = [
+        build
+        for build in bundle.installed_builds(prefix)
+        if build != (target.release_key, target.key)
+    ]
     exe = prefix / "bin" / target.exe
-    managed = bundle.is_managed(prefix, target.key)
-    if exe.exists() and not managed and not args.force:
+    if exe.exists() and not managed and not others and not args.force:
         fail(
-            f"{exe} already exists and was not installed by fast-nvim-latest.\n"
+            f"{exe} already exists and was not installed by {PROG}.\n"
             "  Re-run with --force to overwrite it, or pick another --prefix."
         )
-    if not managed and not args.force:
-        others = [key for key in bundle.installed_targets(prefix) if key != target.key]
+    if not managed and not others and not args.force:
         for owned in (prefix / "lib" / "nvim", prefix / "share" / "nvim" / "runtime"):
             if owned.exists():
-                if others:
-                    fail(
-                        f"{owned} belongs to the fast-nvim-latest install for "
-                        f"{', '.join(others)}; a prefix holds one Neovim build.\n"
-                        "  Use another --prefix, or --force to replace it."
-                    )
                 fail(
-                    f"{owned} already exists and was not installed by fast-nvim-latest.\n"
+                    f"{owned} already exists and was not installed by {PROG}.\n"
                     "  Re-run with --force to replace it, or pick another --prefix."
                 )
 
-    info(f"fast-nvim-latest {__version__} (Neovim {NVIM_VERSION})")
-    info(f"   target  {target.human}")
+    info(f"{PROG} {__version__} (Neovim {target.nvim_version})")
+    info(f"   release {target.release_key} ({target.nvim_version})")
+    info(f"   target  {target.platform.human}")
     info(f"   prefix  {prefix}")
     note = emulation_note()
     if note and not cross:
         warn(note)
-
-    installed = bundle.installed_targets(prefix)
 
     if args.dry_run:
         origin, where = _origin(target)
@@ -172,7 +214,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         args.link = False
 
     if bundle.needs_download(target) and not args.offline:
-        info(f"   fetch   {target.asset} (Neovim {NVIM_VERSION})")
+        hint = target.release.platform_note(target.key)
+        info(f"   fetch   {target.asset} (Neovim {target.nvim_version})")
+        if hint:
+            info(f"           {hint}")
 
     try:
         source_dir, origin = bundle.ensure_bundle(
@@ -203,8 +248,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
         info("installed {} files ({})".format(result["files"], bundle.human_size(result["bytes"])))
     for path in result["paths"]:
         info(f"  {path}")
-    if installed and target.key in installed and not args.force:
-        info("updated the existing fast-nvim-latest install in this prefix")
+    if managed and not args.force:
+        info("updated the existing fast-nvim-release install in this prefix")
+    elif others:
+        previous = ", ".join(f"{r} ({p})" for r, p in others)
+        info(f"replaced {previous} in this prefix (one Neovim per prefix)")
 
     if not cross and not args.no_verify:
         try:
@@ -214,14 +262,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
         info("")
         info(f"verified  {version_line}")
 
-    if not cross and not _on_path(prefix / "bin"):
+    bin_dir = prefix / "bin"
+    if not cross and not _on_path(bin_dir):
         warn(
-            "{} is not on your PATH. Add it for the current shell with:\n"
-            '  export PATH="{}:$PATH"\n'
-            "or permanently in ~/.bashrc / ~/.zshrc.".format(prefix / "bin", prefix / "bin")
+            f"{bin_dir} is not on your PATH. Add it for the current shell with:\n"
+            f'  export PATH="{bin_dir}:$PATH"\n'
+            "or permanently in ~/.bashrc / ~/.zshrc."
             if os.name != "nt"
-            else "{} is not on your PATH; add it via System Properties > "
-            "Environment Variables.".format(prefix / "bin")
+            else f"{bin_dir} is not on your PATH; add it via System Properties > "
+            "Environment Variables."
         )
     if cross:
         info("")
@@ -246,68 +295,83 @@ def _can_symlink() -> bool:
         return False
 
 
-def _list_targets() -> int:
-    host = host_target()
-    width = max(len(key) for key in TARGET_KEYS)
-    info("{:<{w}}  {:<9}  {}".format("platform", "status", "notes", w=width))
-    for key in TARGET_KEYS:
-        target = TARGETS[key]
-        notes = []
-        if host and target.key == host.key:
-            notes.append("this machine")
-        if bundle.has_bundled(target):
-            status = "bundled"
-        elif (bundle.cached_tree(target) / "bin" / target.exe).is_file():
-            status = "cached"
-        elif bundle.cached_archive(target).is_file():
-            status = "cached"
-            notes.append("archive only, needs unpacking")
-        else:
-            status = "download"
-            notes.append("needs network")
-        info("{:<{w}}  {:<9}  {}".format(key, status, ", ".join(notes), w=width))
+def _release_status(platform_key: str, target: Target) -> str:
+    if bundle.has_bundled(target):
+        return "bundled"
+    if (bundle.cached_tree(target) / "bin" / target.exe).is_file():
+        return "cached"
+    if bundle.cached_archive(target).is_file():
+        return "cached archive"
+    note = target.release.platform_note(platform_key)
+    if note and "no " in note:
+        return "unavailable"
+    return "download"
+
+
+def _list_releases() -> int:
+    here = host_platform()
+    here_key = here.key if here else "(unknown)"
+    rows: List[Tuple[str, str, str, str]] = []
+    for key in RELEASE_KEYS:
+        release = RELEASES[key]
+        on_here = release.target(here_key) if here else None
+        status = _release_status(here_key, on_here) if on_here else "unavailable"
+        if key == DEFAULT_RELEASE:
+            status += " (default)"
+        bundled = [t.key for t in release.targets if bundle.has_bundled(t)]
+        rows.append((key, release.version, status, ", ".join(bundled) or "none"))
+    width = max([len("release")] + [len(row[0]) for row in rows])
+    info("{:<{w}}  {:<8}  {:<24}  {}".format("release", "neovim", here_key, "bundled", w=width))
+    for release_key, version, status, bundled in rows:
+        info("{:<{w}}  {:<8}  {:<24}  {}".format(release_key, version, status, bundled, w=width))
     info("")
-    info(f"Neovim {NVIM_VERSION}, cache in {bundle.cache_root()}")
+    info("older lines are fetched from GitHub (checksum-pinned) on first use")
+    info(f"cache in {bundle.cache_root()}")
     return 0
 
 
 def cmd_path(args: argparse.Namespace) -> int:
-    target = parse_target(args.platform, args.arch)
+    release_key, platform_spec = _split_selectors(args.selectors)
+    target = parse_target(platform_spec, args.arch, release_key)
     bundled = bundle.has_bundled(target)
     if args.bundle:
         if not bundled:
+            own = ", ".join(bundle.vendored_platforms(target.release_key)) or "none"
             fail(
-                "{} is not bundled in this wheel (bundled: {})\n  run: {} setup {}".format(
-                    target.key,
-                    ", ".join(bundle.vendored_keys()) or "none",
-                    PROG,
-                    target.key,
-                )
+                f"Neovim {target.nvim_version} is not bundled for {target.key} "
+                f"in this wheel (bundled: {own})\n"
+                f"  run: {PROG} setup {target.release_key} {target.key}"
             )
         payload: Dict[str, object] = {
+            "release": target.release_key,
+            "nvim_version": target.nvim_version,
             "target": target.key,
-            "bundle": str(bundle.bundle_path(target.key)),
+            "bundle": str(bundle.bundle_path(target.release_key, target.key)),
             "bundled": True,
         }
         info(json.dumps(payload, indent=2, sort_keys=True) if args.json else payload["bundle"])
         return 0
 
-    prefix = Path(args.prefix).expanduser() if args.prefix else bundle.default_prefix()
+    prefix = bundle.normalize(args.prefix) if args.prefix else bundle.default_prefix()
     exe = prefix / "bin" / target.exe
-    complete = bundle.is_complete(prefix, target.key)
+    complete = bundle.is_complete(prefix, target.release_key, target.key)
     if args.installed_only and not complete:
         fail(
-            f"no fast-nvim-latest install for {target.key} in {prefix}\n"
-            f"  run: {PROG} setup {target.key}"
+            f"no fast-nvim-release install of Neovim {target.nvim_version} for "
+            f"{target.key} in {prefix}\n"
+            f"  run: {PROG} setup {target.release_key}"
         )
     payload = {
+        "release": target.release_key,
+        "nvim_version": target.nvim_version,
         "target": target.key,
         "prefix": str(prefix),
         "exe": str(exe),
         "installed": complete,
-        "managed": bundle.is_managed(prefix, target.key),
+        "managed": bundle.is_managed(prefix, target.release_key, target.key),
         "bundled": bundled,
-        "bundle": str(bundle.bundle_path(target.key)),
+        "bundle": str(bundle.bundle_path(target.release_key, target.key)),
+        "installed_releases": bundle.installed_releases(prefix),
     }
     if args.json:
         info(json.dumps(payload, indent=2, sort_keys=True))
@@ -317,28 +381,48 @@ def cmd_path(args: argparse.Namespace) -> int:
 
 
 def cmd_version(args: argparse.Namespace) -> int:
-    target = parse_target(args.platform, args.arch)
+    release_key, platform_spec = _split_selectors(args.selectors)
+    target = parse_target(platform_spec, args.arch, release_key)
+    bundled = bundle.vendored_targets()
+    prefix = bundle.normalize(args.prefix) if args.prefix else bundle.default_prefix()
     payload: Dict[str, object] = {
-        "fast_nvim_latest": __version__,
-        "nvim_release": NVIM_VERSION,
+        "fast_nvim_release": __version__,
+        "default_release": DEFAULT_RELEASE,
         "target": target.key,
+        "release": target.release_key,
+        "nvim_version": target.nvim_version,
         "python": "{}.{}.{}".format(*sys.version_info[:3]),
         "python_arch": platform.machine(),
         "emulated": bool(emulation()),
         "bundled": bundle.has_bundled(target),
         "cache": str(bundle.cache_root()),
-        "build_info": bundle.read_build_info(),
-        "vendored_targets": bundle.vendored_keys(),
+        "prefix": str(prefix),
+        "installed": [(t.release_key, t.key) for t in bundle.installed_targets(prefix)],
+        "releases": {
+            key: {
+                "nvim_version": RELEASES[key].version,
+                "platforms": [t.key for t in RELEASES[key].targets],
+                "bundled": bundle.vendored_platforms(key),
+            }
+            for key in RELEASE_KEYS
+        },
+        "vendored_targets": [t.label for t in bundled],
     }
     if args.json:
         info(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    vendored = bundle.vendored_keys()
+
+    lines = [f"{RELEASES[key].key} - {RELEASES[key].version}" for key in RELEASE_KEYS]
     rows = [
         (PROG, __version__),
-        ("Neovim", f"{NVIM_VERSION} (pinned release)"),
-        ("target", target.human),
-        ("in this wheel", ", ".join(vendored) if vendored else "no binaries!"),
+        ("releases", ", ".join(lines)),
+        ("default", f"{DEFAULT_RELEASE} ({RELEASES[DEFAULT_RELEASE].version})"),
+        ("target", f"{target.release_key} on {target.platform.human}"),
+        (
+            "in this wheel",
+            ", ".join(t.label for t in bundled) if bundled else "no binaries!",
+        ),
+        ("installed", f"{_installed_summary(prefix)} ({prefix})"),
     ]
     found = emulation()
     if found:
@@ -348,34 +432,44 @@ def cmd_version(args: argparse.Namespace) -> int:
         info(f"{label:<{width}}  {value}")
     if bundle.has_bundled(target):
         try:
-            info(
-                f"{'bundled nvim':<{width}}  {bundle.neovim_version(bundle.bundle_exe(target.key))}"
-            )
+            bundled_exe = bundle.bundle_exe(target.release_key, target.key)
+            bundle.ensure_executable(bundled_exe)  # pip may not restore the exec bit
+            info(f"{'bundled nvim':<{width}}  {bundle.neovim_version(bundled_exe)}")
         except FastNvimError as exc:
             info(f"{'bundled nvim':<{width}}  unusable: {exc}")
     return 0
 
 
 def cmd_run(argv: Sequence[str]) -> int:
-    """`fast-nvim-latest run [--] [nvim args...]` -- exec the bundled binary."""
+    """``fast-nvim-release run [RELEASE] [--] [nvim args...]``."""
     args = list(argv)
+    release_key = DEFAULT_RELEASE
+    if args and args[0] != "--" and looks_like_release(args[0]):
+        release_key = parse_release(args[0])
+        args = args[1:]
     if args and args[0] == "--":
         args = args[1:]
-    target = host_target()
-    if target is None:
+
+    here = host_platform()
+    if here is None:
         fail(f"cannot detect this platform; use `{PROG} setup` instead")
-    if not bundle.has_bundled(target):
+    target = get_release(release_key).target(here.key)
+    if target is None:
         fail(
-            "this fast-nvim-latest wheel has no Neovim binary for {}.\n"
-            "  bundled targets: {}\n"
-            "  run: {} setup {}".format(
-                target.key,
-                ", ".join(bundle.vendored_keys()) or "none",
-                PROG,
-                target.key,
+            "Neovim {} has no {} build.\n  try one of: {}".format(
+                get_release(release_key).version,
+                here.key,
+                ", ".join(p.key for p in get_release(release_key).platforms),
             )
         )
-    exe = bundle.bundle_exe(target.key)
+    if not bundle.has_bundled(target):
+        own = ", ".join(bundle.vendored_platforms(target.release_key)) or "none"
+        fail(
+            f"this wheel does not bundle Neovim {target.nvim_version} for {target.key}.\n"
+            f"  bundled for {target.release_key}: {own}\n"
+            f"  run: {PROG} setup {target.release_key} --prefix <dir>"
+        )
+    exe = bundle.bundle_exe(target.release_key, target.key)
     bundle.ensure_executable(exe)
     if os.name == "nt":
         return subprocess.call([str(exe), *args])
@@ -389,32 +483,31 @@ def cmd_run(argv: Sequence[str]) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
-        description="Ship Neovim in a pip wheel: install the bundled nvim, or fetch "
-        "another platform's build.",
+        description="Ship Neovim releases in a pip wheel: install the bundled build "
+        "of the release you pick, or fetch another platform's.",
         epilog=EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"{PROG} {__version__}")
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
+    selector_help = (
+        "release (0.10, 0.11, 0.12, latest) and/or platform (linux, mac, windows, "
+        "linux-arm64). Both are optional and may be given in either order; the "
+        f"release defaults to {DEFAULT_RELEASE} and the platform to this machine."
+    )
+
     setup = subparsers.add_parser(
         "setup",
-        help="install the bundled nvim into a prefix (default: ~/.local)",
+        help="install a release into a prefix (default: newest release, ~/.local)",
         description="Install Neovim into a prefix so `nvim` is usable on PATH. "
-        "The platform argument defaults to this machine; other platforms are "
-        "downloaded from GitHub (and cached).",
+        "Older release lines come from GitHub (checksum-pinned) and are cached.",
     )
-    setup.add_argument(
-        "platform",
-        nargs="?",
-        default=None,
-        metavar="PLATFORM",
-        help="linux, mac, windows, or an exact build like linux-arm64 (default: this machine)",
-    )
+    setup.add_argument("selectors", nargs="*", metavar="RELEASE|PLATFORM", help=selector_help)
     setup.add_argument("--arch", help="x86_64/amd64 or arm64/aarch64")
     setup.add_argument(
         "--prefix",
-        help="install prefix (default: $FAST_NVIM_LATEST_PREFIX or ~/.local)",
+        help="install prefix (default: $FAST_NVIM_RELEASE_PREFIX or ~/.local)",
     )
     setup.add_argument("--force", action="store_true", help="overwrite existing files")
     setup.add_argument(
@@ -434,40 +527,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="never download; use bundled/cached copies only",
     )
     setup.add_argument("--quiet", action="store_true", help="no progress bar")
-    setup.add_argument("--list", action="store_true", help="list known platforms and their status")
+    setup.add_argument(
+        "--list", action="store_true", help="list supported releases and where they come from"
+    )
     setup.set_defaults(func=cmd_setup)
 
     path = subparsers.add_parser(
-        "path", help="print the nvim path (or the bundled bundle directory)"
+        "path", help="print the nvim path (or the in-package bundle directory)"
     )
-    path.add_argument("platform", nargs="?", default=None, metavar="PLATFORM")
+    path.add_argument("selectors", nargs="*", metavar="RELEASE|PLATFORM", help=selector_help)
     path.add_argument("--arch")
     path.add_argument("--prefix", help="prefix to inspect (default: ~/.local)")
     path.add_argument("--bundle", action="store_true", help="print the in-package bundle dir")
     path.add_argument(
         "--installed-only",
         action="store_true",
-        help="fail unless fast-nvim-latest installed this target into the prefix",
+        help="fail unless fast-nvim-release installed this release into the prefix",
     )
     path.add_argument("--json", action="store_true")
     path.set_defaults(func=cmd_path)
 
-    version = subparsers.add_parser("version", help="show versions and what is bundled")
-    version.add_argument("platform", nargs="?", default=None, metavar="PLATFORM")
+    version = subparsers.add_parser(
+        "version", help="show versions, supported releases, and what is bundled"
+    )
+    version.add_argument("selectors", nargs="*", metavar="RELEASE|PLATFORM", help=selector_help)
     version.add_argument("--arch")
+    version.add_argument("--prefix", help="prefix to inspect (default: ~/.local)")
     version.add_argument("--json", action="store_true")
     version.set_defaults(func=cmd_version)
 
     run = subparsers.add_parser(
         "run",
-        help="run the bundled nvim (all arguments go to nvim)",
+        help="run a bundled nvim without installing it",
         description="Run the Neovim binary shipped in this wheel without installing "
-        "it. Everything after `run` is passed to nvim verbatim.",
+        "it. Everything after `run` (and the optional release) is passed to nvim "
+        "verbatim.",
     )
     run.add_argument(
         "nvim_args",
         nargs=argparse.REMAINDER,
-        help="arguments passed to nvim verbatim",
+        help="optional RELEASE followed by arguments passed to nvim verbatim",
     )
 
     return parser

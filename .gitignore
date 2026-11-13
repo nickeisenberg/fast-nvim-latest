@@ -1,8 +1,9 @@
 # vendored Neovim builds (created by scripts/fetch_nvim.py)
-src/fast_nvim_latest/_nvim/*
-!src/fast_nvim_latest/_nvim/.gitkeep
-# Neovim's license travels with every wheel, so it is tracked in git
-!src/fast_nvim_latest/_nvim/LICENSE.nvim.txt
+src/fast_nvim_release/_nvim/*
+!src/fast_nvim_release/_nvim/.gitkeep
+# Neovim's license travels with every wheel, so it is tracked in git:
+# one copy per supported release line
+!src/fast_nvim_release/_nvim/LICENSE.nvim-*.txt
 
 # build artifacts
 build/
@@ -22,4 +23,4 @@ venv/
 .ruff_cache/
 
 # keep the package marker so the tree exists before vendoring
-!src/fast_nvim_latest/_nvim/.gitkeep
+!src/fast_nvim_release/_nvim/.gitkeep

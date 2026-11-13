@@ -1,11 +1,12 @@
-"""Locate, fetch and install the vendored Neovim build.
+"""Locate, fetch and install the vendored Neovim builds.
 
-The wheel ships one or more complete Neovim trees under
-``fast_nvim_latest/_nvim/<target-key>/``::
+The wheel ships one complete Neovim tree per (release, platform) under
+``fast_nvim_release/_nvim/<release>/<platform>/``::
 
-    _nvim/linux-x86_64/bin/nvim
-    _nvim/linux-x86_64/lib/nvim/parser/*.so
-    _nvim/linux-x86_64/share/nvim/runtime/...
+    _nvim/0.12/linux-x86_64/bin/nvim
+    _nvim/0.12/linux-x86_64/lib/nvim/parser/*.so
+    _nvim/0.12/linux-x86_64/share/nvim/runtime/...
+    _nvim/0.10/linux-x86_64/...            (older lines travel too)
 
 That layout matters: Neovim finds its runtime by walking up from the real
 path of its own executable (``../share/nvim/runtime``), so the runtime has to
@@ -29,10 +30,14 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from . import __version__
-from .platforms import NVIM_VERSION, TARGETS, Target
+from .platforms import (
+    RELEASE_KEYS,
+    RELEASES,
+    Target,
+)
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 BUNDLE_ROOT = PACKAGE_DIR / "_nvim"
@@ -45,9 +50,9 @@ BUNDLE_PARTS: Tuple[Tuple[str, str], ...] = (
     ("share/nvim/runtime", "share/nvim/runtime"),
 )
 
-MARKER_DIR = Path("share") / "fast-nvim-latest"
+MARKER_DIR = Path("share") / "fast-nvim-release"
 
-USER_AGENT = f"fast-nvim-latest/{__version__} (+https://pypi.org/project/fast-nvim-latest/)"
+USER_AGENT = f"fast-nvim-release/{__version__} (+https://pypi.org/project/fast-nvim-release/)"
 
 #: How long an install may hold the prefix lock before it is assumed to be a
 #: leftover from a killed process (seconds).
@@ -66,26 +71,53 @@ def _exe_ok(path: Path) -> bool:
     return path.is_file()
 
 
-def bundle_path(key: str) -> Path:
-    return BUNDLE_ROOT / key
+def bundle_path(release_key: str, platform_key: str) -> Path:
+    return BUNDLE_ROOT / release_key / platform_key
 
 
-def bundle_exe(key: str) -> Path:
-    target = TARGETS[key]
-    return bundle_path(key) / "bin" / target.exe
+def bundle_exe(release_key: str, platform_key: str) -> Path:
+    target = RELEASES[release_key].target(platform_key)
+    if target is None:
+        raise FastNvimError(f"Neovim {RELEASES[release_key].version} has no {platform_key} build")
+    return bundle_path(release_key, platform_key) / "bin" / target.exe
 
 
-def vendored_keys() -> List[str]:
-    """Targets whose build is included in this installation of fast-nvim-latest."""
-    keys = []
-    for key in TARGETS:
-        if _exe_ok(bundle_exe(key)):
-            keys.append(key)
-    return keys
+def vendored_platforms(release_key: str) -> List[str]:
+    """Platforms of ``release_key`` shipped inside this wheel.
+
+    A build a release lists as ``downloaded_not_bundled`` never counts, even
+    if a stray tree exists on disk: that list exists because shipping it would
+    mis-tag the wheel.
+    """
+    release = RELEASES[release_key]
+    return [
+        target.key
+        for target in release.targets
+        if release.bundled(target.key) and _exe_ok(bundle_exe(release_key, target.key))
+    ]
+
+
+def vendored_releases() -> List[str]:
+    """Releases with at least one build inside this wheel, oldest first."""
+    return [key for key in RELEASE_KEYS if vendored_platforms(key)]
+
+
+def vendored_targets() -> List[Target]:
+    """Every (release, platform) build included in this installation."""
+    found = []
+    for key in RELEASE_KEYS:
+        for platform_key in vendored_platforms(key):
+            target = RELEASES[key].target(platform_key)
+            if target is not None:
+                found.append(target)
+    return found
 
 
 def has_bundled(target: Target) -> bool:
-    return _exe_ok(bundle_exe(target.key))
+    """True if ``target`` ships in this wheel (and not merely downloadable)."""
+    if not target.release.bundled(target.key):
+        return False
+    return _exe_ok(bundle_exe(target.release_key, target.key))
 
 
 def read_build_info() -> Dict[str, object]:
@@ -93,9 +125,33 @@ def read_build_info() -> Dict[str, object]:
     return _read_json(BUNDLE_ROOT / "BUILD_INFO.json")
 
 
-def bundle_build_info(key: str) -> Dict[str, object]:
-    """Contents of ``_nvim/<key>/BUILD_INFO.json`` for one vendored build."""
-    return _read_json(bundle_path(key) / "BUILD_INFO.json")
+def bundle_build_info(release_key: str) -> Dict[str, object]:
+    """What the wheel records about one release.
+
+    ``scripts/fetch_nvim.py`` writes the per-release summary into the top-level
+    ``_nvim/BUILD_INFO.json`` index; each ``_nvim/<release>/<platform>/`` also
+    has its own record, which is the fallback for hand-assembled trees.
+    """
+    index = read_build_info()
+    releases = index.get("releases")
+    if isinstance(releases, dict) and isinstance(releases.get(release_key), dict):
+        return releases[release_key]  # type: ignore[return-value]
+    for target in RELEASES[release_key].targets:
+        info = _read_json(bundle_path(release_key, target.key) / "BUILD_INFO.json")
+        if info:
+            return info
+    return {}
+
+
+def bundled_nvim_version(release_key: Optional[str] = None) -> Optional[str]:
+    """The Neovim version recorded in the wheel's index (or one release of it)."""
+    if release_key is None:
+        info = read_build_info()
+        version = info.get("nvim_version")
+        return version if isinstance(version, str) else None
+    info = bundle_build_info(release_key)
+    version = info.get("nvim_version")
+    return version if isinstance(version, str) else None
 
 
 def _read_json(path: Path) -> Dict[str, object]:
@@ -107,40 +163,49 @@ def _read_json(path: Path) -> Dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def bundled_nvim_version() -> Optional[str]:
-    info = read_build_info()
-    version = info.get("nvim_version")
-    return version if isinstance(version, str) else None
-
-
 # --------------------------------------------------------------------------
 # cache + downloads (for platforms that are not in the wheel)
 # --------------------------------------------------------------------------
+def normalize(path: Union[str, os.PathLike]) -> Path:
+    """Absolute, ``~``-expanded form of a user supplied path.
+
+    ``setup --prefix ./here`` must mean the same directory no matter where a
+    later command is run from, and the paths we print and record in markers
+    have to be usable as-is.
+    """
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
+
+
 def cache_root() -> Path:
-    override = os.environ.get("FAST_NVIM_LATEST_CACHE_DIR")
+    override = os.environ.get("FAST_NVIM_RELEASE_CACHE_DIR") or os.environ.get(
+        "FAST_NVIM_LATEST_CACHE_DIR"  # deprecated, pre-rename name
+    )
     if override:
-        return Path(override).expanduser()
+        return normalize(override)
     xdg = os.environ.get("XDG_CACHE_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".cache"
-    return base / "fast-nvim-latest"
+    return normalize(base / "fast-nvim-release")
 
 
 def cached_archive(target: Target) -> Path:
-    return cache_root() / NVIM_VERSION / target.asset
+    # the Neovim version is unique per release line, so it names the folder
+    return cache_root() / target.nvim_version / target.asset
 
 
 def cached_tree(target: Target) -> Path:
-    return cache_root() / NVIM_VERSION / target.key
+    return cache_root() / target.nvim_version / target.release_key / target.key
 
 
 def default_prefix() -> Path:
-    override = os.environ.get("FAST_NVIM_LATEST_PREFIX")
+    override = os.environ.get("FAST_NVIM_RELEASE_PREFIX") or os.environ.get(
+        "FAST_NVIM_LATEST_PREFIX"  # deprecated, pre-rename name
+    )
     if override:
-        return Path(override).expanduser()
+        return normalize(override)
     if sys.platform in ("win32", "cygwin", "msys"):
         base = os.environ.get("LOCALAPPDATA")
         root = Path(base) if base else Path.home() / "AppData" / "Local"
-        return root / "fast-nvim-latest"
+        return normalize(root / "fast-nvim-release")
     return Path.home() / ".local"
 
 
@@ -234,8 +299,8 @@ def fetch_archive(
         archive.unlink()  # stale/corrupt cache entry
     if offline:
         raise FastNvimError(
-            f"{target.key} is not available offline.\n"
-            f"  cached copies live in {cache_root()} (nothing for {NVIM_VERSION})"
+            f"Neovim {target.release.display} for {target.key} is not available offline.\n"
+            f"  no usable cached copy in {cache_root()}"
         )
     _download(target, archive, progress=progress)
     return archive
@@ -355,8 +420,13 @@ def extract_archive(target: Target, archive: Path, dest: Path) -> Path:
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    backup = dest.with_name(f"{dest.name}.old")
+    if backup.exists() and not dest.exists():
+        # a previous swap was killed between "move the old tree away" and
+        # "move the new one in": put the old tree back and swap normally
+        os.replace(backup, dest)
     temp = Path(tempfile.mkdtemp(prefix=".extract-", dir=str(dest.parent)))
-    backup: Optional[Path] = None
+    swapped: Optional[Path] = None
     try:
         if target.archive == "zip":
             count = _extract_zip(archive, temp, target.strip_prefix)
@@ -371,18 +441,18 @@ def extract_archive(target: Target, archive: Path, dest: Path) -> Path:
             raise FastNvimError(f"archive {archive.name} has no bin/{target.exe}")
         ensure_executable(exe)
         if dest.exists():
-            backup = dest.with_name(f"{dest.name}.old")
-            if backup.exists():  # pragma: no cover - left by a killed run
-                shutil.rmtree(backup, ignore_errors=True)
-            os.replace(dest, backup)
+            swapped = backup
+            if swapped.exists():  # pragma: no cover - left by a killed run
+                shutil.rmtree(swapped, ignore_errors=True)
+            os.replace(dest, swapped)
         os.replace(temp, dest)
     except BaseException:
         shutil.rmtree(temp, ignore_errors=True)
-        if backup is not None and backup.exists() and not dest.exists():
-            os.replace(backup, dest)  # keep the previous tree usable
+        if swapped is not None and swapped.exists() and not dest.exists():
+            os.replace(swapped, dest)  # keep the previous tree usable
         raise
-    if backup is not None:
-        shutil.rmtree(backup, ignore_errors=True)
+    if swapped is not None:
+        shutil.rmtree(swapped, ignore_errors=True)
     return dest
 
 
@@ -410,7 +480,7 @@ def ensure_bundle(
     then a download from GitHub.
     """
     if has_bundled(target):
-        return bundle_path(target.key), "pip wheel"
+        return bundle_path(target.release_key, target.key), "pip wheel"
     tree = cached_tree(target)
     if _exe_ok(tree / "bin" / target.exe):
         return tree, "cache"
@@ -421,7 +491,7 @@ def ensure_bundle(
 
 
 # --------------------------------------------------------------------------
-# installing into a prefix (what ``fast-nvim-latest setup`` does)
+# installing into a prefix (what ``fast-nvim-release setup`` does)
 # --------------------------------------------------------------------------
 def ensure_executable(path: Path) -> None:
     """Make a file executable for the current user.
@@ -441,43 +511,64 @@ def ensure_executable(path: Path) -> None:
         | ((mode & stat.S_IROTH) and stat.S_IXOTH)
     )
     if mode & stat.S_IXUSR == 0:
-        os.chmod(path, mode | stat.S_IXUSR | wanted)
+        try:
+            os.chmod(path, mode | stat.S_IXUSR | wanted)
+        except OSError:  # read-only install (e.g. a system site-packages)
+            return
 
 
-def marker_file(prefix: Path, key: str) -> Path:
-    return Path(prefix) / MARKER_DIR / f"{key}.json"
+def marker_file(prefix: Path, release_key: str, platform_key: str) -> Path:
+    return Path(prefix) / MARKER_DIR / f"{release_key}-{platform_key}.json"
 
 
-def marker_info(prefix: Path, key: str) -> Dict[str, object]:
+def marker_info(prefix: Path, release_key: str, platform_key: str) -> Dict[str, object]:
     """The marker of a previous install, or ``{}`` when there is none."""
-    return _read_json(marker_file(prefix, key))
+    return _read_json(marker_file(prefix, release_key, platform_key))
 
 
-def is_managed(prefix: Path, key: str) -> bool:
-    """True if fast-nvim-latest wrote (or started writing) this prefix."""
-    return marker_file(prefix, key).is_file()
+def is_managed(prefix: Path, release_key: str, platform_key: str) -> bool:
+    """True if fast-nvim-release wrote (or started writing) this prefix."""
+    return marker_file(prefix, release_key, platform_key).is_file()
 
 
-def is_complete(prefix: Path, key: str) -> bool:
-    """True if a fast-nvim-latest install finished (marker + executable present)."""
-    if not is_managed(prefix, key):
+def is_complete(prefix: Path, release_key: str, platform_key: str) -> bool:
+    """True if a fast-nvim-release install finished (marker + executable present)."""
+    if not is_managed(prefix, release_key, platform_key):
         return False
-    info = marker_info(prefix, key)
-    if info.get("complete") is False:  # killed mid-install
+    info = marker_info(prefix, release_key, platform_key)
+    if info.get("complete") is not True:  # killed mid-install or torn marker
         return False
-    return _exe_ok(Path(prefix) / "bin" / TARGETS[key].exe)
+    target = RELEASES[release_key].target(platform_key)
+    if target is None:
+        return False
+    return _exe_ok(Path(prefix) / "bin" / target.exe)
 
 
-def installed_targets(prefix: Path) -> List[str]:
+def installed_builds(prefix: Path) -> List[Tuple[str, str]]:
+    """``(release, platform)`` pairs fast-nvim-release installed into ``prefix``."""
     directory = Path(prefix) / MARKER_DIR
     if not directory.is_dir():
         return []
-    keys = []
+    found: List[Tuple[str, str]] = []
     for path in sorted(directory.glob("*.json")):
-        key = path.stem
-        if key in TARGETS:
-            keys.append(key)
-    return keys
+        release_key, _, platform_key = path.stem.partition("-")
+        if release_key in RELEASES and RELEASES[release_key].target(platform_key) is not None:
+            found.append((release_key, platform_key))
+    return found
+
+
+def installed_targets(prefix: Path) -> List[Target]:
+    """The builds fast-nvim-release installed into ``prefix``, as targets."""
+    targets = []
+    for release_key, platform_key in installed_builds(prefix):
+        target = RELEASES[release_key].target(platform_key)
+        if target is not None:
+            targets.append(target)
+    return targets
+
+
+def installed_releases(prefix: Path) -> List[str]:
+    return sorted({release_key for release_key, _ in installed_builds(prefix)})
 
 
 def _lock_is_stale(path: Path) -> bool:
@@ -524,7 +615,7 @@ def _lock(path: Path, timeout: float = LOCK_TIMEOUT) -> Iterator[None]:
                 continue
             if time.monotonic() > deadline:
                 raise FastNvimError(
-                    f"another fast-nvim-latest setup is running in {path.parent.parent} "
+                    f"another fast-nvim-release setup is running in {path.parent.parent} "
                     f"(lock file {path}); remove it if that is not the case"
                 ) from None
             time.sleep(0.1)
@@ -614,13 +705,14 @@ def _write_marker(
     bin_names: List[str],
     complete: bool,
 ) -> None:
-    marker = marker_file(prefix, target.key)
+    marker = marker_file(prefix, target.release_key, target.key)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(
         json.dumps(
             {
                 "target": target.key,
-                "nvim_version": NVIM_VERSION,
+                "release": target.release_key,
+                "nvim_version": target.nvim_version,
                 "bundle": str(bundle_dir),
                 "link": link,
                 "complete": complete,
@@ -636,6 +728,35 @@ def _write_marker(
     )
 
 
+def _plain_name(name: object) -> bool:
+    """True for a bare file name that is safe to join onto ``bin``."""
+    return (
+        isinstance(name, str)
+        and name not in ("", ".", "..")
+        and "/" not in name
+        and "\\" not in name
+    )
+
+
+def _drop_other_installs(prefix: Path, keep: Tuple[str, str]) -> List[str]:
+    """Forget other builds' markers and report bin entries they owned.
+
+    A prefix holds exactly one Neovim, so installing another release (or
+    another platform's build) must remove the previous marker and the
+    executables it put in ``bin`` -- otherwise ``path`` keeps claiming a build
+    that is gone and ``bin`` ends up holding two Neovims.
+    """
+    stale: List[str] = []
+    for release_key, platform_key in installed_builds(prefix):
+        if (release_key, platform_key) == keep:
+            continue
+        for name in marker_info(prefix, release_key, platform_key).get("bin") or []:
+            if _plain_name(name):
+                stale.append(name)
+        marker_file(prefix, release_key, platform_key).unlink(missing_ok=True)
+    return stale
+
+
 def install(
     target: Target,
     bundle_dir: Path,
@@ -646,28 +767,36 @@ def install(
 ) -> Dict[str, object]:
     """Install a Neovim tree into ``prefix`` (``bin/nvim`` + runtime).
 
-    Re-installing into a prefix fast-nvim-latest already manages replaces the files
+    Re-installing into a prefix fast-nvim-release already manages replaces the files
     it owns (``lib/nvim``, ``share/nvim/runtime`` and the entries it put in
     ``bin``) so an upgrade cannot leave a mix of two Neovim versions behind.
     Everything else in the prefix is left alone.  ``replace`` clears those
-    directories even when the prefix has no marker yet (``setup --force``).
+    directories even when the prefix has no marker yet (``setup --force``), and
+    always forgets any other build in the same prefix: a prefix holds exactly
+    one Neovim, so it is also how ``setup 0.10`` replaces ``setup 0.12``.
     """
-    prefix = Path(prefix).expanduser()
+    prefix = normalize(prefix)
     bundle_dir = Path(bundle_dir)
     bin_source = bundle_dir / "bin"
     bin_names = sorted(entry.name for entry in bin_source.iterdir()) if bin_source.is_dir() else []
-    previous = marker_info(prefix, target.key)
+    previous = marker_info(prefix, target.release_key, target.key)
     files = 0
     links = 0
     written: List[Path] = []
 
     with _lock(prefix / MARKER_DIR / ".lock"):
-        if previous or replace:
+        managed = is_managed(prefix, target.release_key, target.key)
+        # another release or platform in this prefix is replaced, not merged
+        others = [
+            build for build in installed_builds(prefix) if build != (target.release_key, target.key)
+        ]
+        stale_names = _drop_other_installs(prefix, (target.release_key, target.key))
+        if managed or replace or others:
             for _, destination in BUNDLE_PARTS:
                 if destination != "bin":
                     _remove(prefix / destination)
-            for name in previous.get("bin") or []:
-                if name not in bin_names:
+            for name in list(previous.get("bin") or []) + stale_names:
+                if name not in bin_names and _plain_name(name):
                     _remove(prefix / "bin" / name)
         # written before the copy: if this process dies half way, the next
         # `setup` recognises the prefix as its own instead of demanding --force
