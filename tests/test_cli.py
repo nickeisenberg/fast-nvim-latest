@@ -159,6 +159,40 @@ def test_setup_cross_platform_needs_a_prefix(fake_bundle, capsys):
     assert "not the platform you are on" in capsys.readouterr().err
 
 
+def test_a_cross_platform_install_warns_before_replacing_this_machines_build(
+    fake_bundle, prefix, capsys, monkeypatch
+):
+    """An env-var prefix + another platform must not quietly cost the user nvim."""
+    from conftest import make_bundle
+
+    foreign = other_platform()
+    make_bundle(fake_bundle, NEWEST, foreign)  # so the cross install needs no network
+
+    assert main(["setup", NEWEST, "--prefix", str(prefix), "--quiet"]) == 0
+    capsys.readouterr()
+
+    monkeypatch.setenv("FAST_NVIM_RELEASE_PREFIX", str(prefix))
+    assert main(["setup", NEWEST, foreign, "--offline", "--quiet"]) == 0
+    err = capsys.readouterr().err
+    assert "already holds a Neovim for this machine" in err
+    assert "separate --prefix" in err
+
+    # the foreign build really is what is installed now
+    assert bundle.installed_releases(prefix) == [NEWEST]
+    installed = bundle.installed_targets(prefix)
+    assert [target.key for target in installed] == [foreign]
+
+
+def test_a_cross_platform_install_into_an_empty_prefix_is_quiet(fake_bundle, tmp_path, capsys):
+    from conftest import make_bundle
+
+    foreign = other_platform()
+    make_bundle(fake_bundle, NEWEST, foreign)
+    target = tmp_path / "fresh"
+    assert main(["setup", NEWEST, foreign, "--prefix", str(target), "--quiet"]) == 0
+    assert "already holds a Neovim" not in capsys.readouterr().err
+
+
 def test_setup_cross_platform_offline_without_cache_fails(fake_bundle, tmp_path, capsys):
     with pytest.raises(SystemExit) as excinfo:
         main(
