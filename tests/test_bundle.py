@@ -591,6 +591,35 @@ def test_windows_zip_with_a_symlink_is_refused(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# the start-up probe must not touch the user's state
+# --------------------------------------------------------------------------
+def test_the_runtime_probe_turns_user_config_and_shada_off():
+    """``-u NONE`` alone still reads *and rewrites* the user's shada file."""
+    assert (
+        "-u" in bundle.PROBE_ARGS and bundle.PROBE_ARGS[bundle.PROBE_ARGS.index("-u") + 1] == "NONE"
+    )
+    assert (
+        "-i" in bundle.PROBE_ARGS and bundle.PROBE_ARGS[bundle.PROBE_ARGS.index("-i") + 1] == "NONE"
+    )
+    assert "+lua io.write(vim.env.VIMRUNTIME)" in bundle.PROBE_ARGS
+
+
+@POSIX_ONLY
+def test_runtime_path_uses_the_safe_probe(fake_bundle, host_key, monkeypatch):
+    seen = {}
+    real = bundle._run
+
+    def spy(exe, args, timeout):
+        seen["args"] = list(args)
+        return real(exe, args, timeout)
+
+    monkeypatch.setattr(bundle, "_run", spy)
+    reported = bundle.runtime_path(bundle.bundle_exe("0.12", host_key))
+    assert seen["args"] == list(bundle.PROBE_ARGS)
+    assert reported.endswith("share/nvim/runtime")
+
+
+# --------------------------------------------------------------------------
 # misc
 # --------------------------------------------------------------------------
 def test_user_agent_has_the_real_version():

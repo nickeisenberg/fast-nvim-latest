@@ -24,7 +24,7 @@ from typing import List, NoReturn, Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_release import __version__  # noqa: E402
+from fast_nvim_release import __version__, bundle  # noqa: E402
 from fast_nvim_release.platforms import host_platform  # noqa: E402
 
 
@@ -71,7 +71,8 @@ def find_wheel(explicit: List[str]) -> Path:
 
 
 def runtime_of(exe: Path) -> str:
-    result = run([exe, "-u", "NONE", "--headless", "+lua io.write(vim.env.VIMRUNTIME)", "+q"])
+    # the same probe the CLI uses: no user config, and no shada rewrite
+    result = run([exe, *bundle.PROBE_ARGS])
     return result.stdout.decode("utf-8", "replace").strip()
 
 
