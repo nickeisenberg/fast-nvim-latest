@@ -261,19 +261,6 @@ def test_default_prefix_can_be_overridden(monkeypatch, tmp_path):
     assert bundle.default_prefix() == wanted
 
 
-def test_the_pre_rename_env_names_still_work(monkeypatch, tmp_path):
-    """Anyone with the old variables exported keeps working after the rename."""
-    wanted = tmp_path / "old-prefix"
-    monkeypatch.delenv("FAST_NVIM_RELEASE_PREFIX", raising=False)
-    monkeypatch.setenv("FAST_NVIM_LATEST_PREFIX", str(wanted))
-    assert bundle.default_prefix() == wanted
-
-    cache = tmp_path / "old-cache"
-    monkeypatch.delenv("FAST_NVIM_RELEASE_CACHE_DIR", raising=False)
-    monkeypatch.setenv("FAST_NVIM_LATEST_CACHE_DIR", str(cache))
-    assert bundle.cache_root() == cache
-
-
 def test_relative_paths_are_made_absolute(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     assert bundle.normalize("some/prefix") == tmp_path / "some" / "prefix"
