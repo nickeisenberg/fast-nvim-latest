@@ -14,10 +14,12 @@ at runtime the wheel's own contents say what is available.
 
 from __future__ import annotations
 
+import os
 import platform
+import re
 import sys
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -189,3 +191,35 @@ def host_platform() -> Optional[Platform]:
     else:
         return None
     return PLATFORMS[f"{family}-{arch}"]
+
+
+def host_glibc() -> Optional[Tuple[int, int]]:
+    """This system's glibc version, or ``None`` (not Linux, musl, unknown)."""
+    try:
+        reported = os.confstr("CS_GNU_LIBC_VERSION")  # e.g. "glibc 2.28"
+    except (AttributeError, OSError, ValueError):
+        return None
+    match = re.search(r"(\d+)\.(\d+)", reported or "")
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+#: Neovim's official Linux builds need this glibc; older systems need the
+#: ``manylinux_2_17`` wheel with the builds from ``neovim-releases``.
+OFFICIAL_LINUX_GLIBC = (2, 34)
+
+
+def host_wheel_tag() -> Optional[str]:
+    """The wheel pip would install on this machine (``None`` if there is none).
+
+    Like pip, this looks at the glibc too: on a Linux older than the official
+    builds need, it is the old-glibc wheel for this architecture.
+    """
+    here = host_platform()
+    if here is None:
+        return None
+    glibc = host_glibc()
+    if here.key.startswith("linux-") and glibc is not None and glibc < OFFICIAL_LINUX_GLIBC:
+        for tag, wheel in WHEELS.items():
+            if wheel.platform == here.key and tag.startswith("manylinux_2_17_"):
+                return tag
+    return here.wheel_tag

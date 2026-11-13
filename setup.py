@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - older toolchains
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from fast_nvim_release.platforms import host_platform  # noqa: E402
+from fast_nvim_release.platforms import host_wheel_tag  # noqa: E402
 
 BUNDLE_ROOT = ROOT / "src" / "fast_nvim_release" / "_nvim"
 
@@ -41,11 +41,10 @@ class BinaryDistribution(Distribution):
 class PlatformWheel(bdist_wheel):
     def get_tag(self):
         tag = os.environ.get("FAST_NVIM_RELEASE_PLAT_TAG", "").strip()
-        if not tag:
-            here = host_platform()
-            if here is None:
+        if not tag:  # the wheel pip would pick here, old-glibc Linux included
+            tag = host_wheel_tag()
+            if tag is None:
                 raise SystemExit("unknown build platform; set FAST_NVIM_RELEASE_PLAT_TAG")
-            tag = here.wheel_tag
         return "py3", "none", tag
 
     def run(self):
