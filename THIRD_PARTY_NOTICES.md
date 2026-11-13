@@ -8,8 +8,9 @@ and, in the wheels for older Linux systems, from
 [`neovim/neovim-releases`](https://github.com/neovim/neovim-releases), where the
 Neovim project publishes builds for glibc 2.17.
 
-The release lines shipped are pinned in `src/fast_nvim_release/platforms.py`
-(`RELEASES`). Each release line is pinned to one patch release:
+The release lines shipped, and the exact builds, are pinned in `lines.json`;
+each wheel also records its build in `fast_nvim_release/_nvim/build.json`.
+At the time of writing each line is pinned to:
 
 | Release | Neovim version |
 | --- | --- |
@@ -24,7 +25,7 @@ The release lines shipped are pinned in `src/fast_nvim_release/platforms.py`
   release's tag by `scripts/fetch_nvim.py`), and the Vim license is also present
   in the runtime as `share/nvim/runtime/doc/uganda.txt`.
 * Each vendored build is extracted from the release archive whose sha256 is
-  pinned in `platforms.py`.
+  pinned in `lines.json`.
 
 ## Bundled third-party components
 

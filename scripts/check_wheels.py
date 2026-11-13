@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
-"""Validate built wheels before they are uploaded.
+"""Validate built wheels against ``lines.json`` before they are uploaded.
 
-    python scripts/check_wheels.py [--expect-version V] [dist/*.whl]
+    python scripts/check_wheels.py [dist/*.whl]
 
-Each wheel must carry exactly the builds ``platforms.WHEELS`` lists for its
-tag: the executable, a complete runtime, a ``VERSION`` file naming the pinned
-version, and Neovim's license.  On Linux the binaries' glibc requirement must
-fit the manylinux tag, or pip would install a wheel that cannot start.
+A wheel ``fast_nvim_release-<line>.<k>-py3-none-<tag>.whl`` must carry exactly
+the build ``lines.json`` pins for that line and tag (``build.json`` says so),
+with its executable, a complete runtime and Neovim's license.  On Linux the
+binary's glibc requirement must fit the manylinux tag, or pip would install a
+wheel that cannot start.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Tuple
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+import lines
 
-from fast_nvim_release.platforms import PLATFORMS, WHEELS  # noqa: E402
-
-WHEEL_NAME = re.compile(r"^fast_nvim_release-(?P<version>[^-]+)-py3-none-(?P<tag>.+)\.whl$")
+WHEEL_NAME = re.compile(
+    r"^fast_nvim_release-(?P<line>\d+\.\d+)\.(?P<k>\d+)-py3-none-(?P<tag>.+)\.whl$"
+)
 MANYLINUX = re.compile(r"^manylinux_(\d+)_(\d+)_")
 GLIBC_SYMBOL = re.compile(rb"GLIBC_(\d+)\.(\d+)")
 PAYLOAD = "fast_nvim_release/_nvim/"
@@ -38,51 +39,44 @@ def glibc_floor(binary: bytes) -> Optional[Tuple[int, int]]:
     return max(found) if found else None
 
 
-def carried(names: Set[str]) -> Set[Tuple[str, str]]:
-    """``(release, platform)`` pairs with files under ``_nvim/``."""
-    pairs = set()
-    for name in names:
-        parts = name[len(PAYLOAD) :].split("/") if name.startswith(PAYLOAD) else []
-        if len(parts) > 2:
-            pairs.add((parts[0], parts[1]))
-    return pairs
-
-
-def check(path: Path) -> List[str]:
+def check(path: Path, data: Optional[dict] = None) -> List[str]:
+    data = data or lines.load()
     match = WHEEL_NAME.match(path.name)
-    if not match or match.group("tag") not in WHEELS:
-        return [f"unexpected wheel name or platform tag: {path.name}"]
-    tag = match.group("tag")
-    wheel_spec = WHEELS[tag]
-    platform = PLATFORMS[wheel_spec.platform]
-    expected = set(wheel_spec.releases)
-    problems = []
+    if not match:
+        return [f"unexpected wheel name: {path.name}"]
+    line, k, tag = match.group("line"), int(match.group("k")), match.group("tag")
+    if line not in data:
+        return [f"{line} is not a line in lines.json"]
+    if k != data[line]["k"]:
+        return [f"version {line}.{k}, but lines.json says {line}.{data[line]['k']}"]
+    try:
+        spec = lines.find(line, tag, data)
+    except KeyError as exc:
+        return [exc.args[0]]
 
+    problems = []
     with zipfile.ZipFile(path) as wheel:
         names = set(wheel.namelist())
-        builds = carried(names)
-        if builds != {(key, platform.key) for key in expected}:
-            want = ", ".join(sorted(f"{key}/{platform.key}" for key in expected))
-            have = ", ".join(sorted(f"{r}/{p}" for r, p in builds)) or "nothing"
-            problems.append(f"expected {want}; the wheel carries {have}")
-
-        for release_key in sorted(expected):
-            root = f"{PAYLOAD}{release_key}/{platform.key}/"
-            exe = f"{root}bin/{platform.exe}"
-            licence = f"{PAYLOAD}LICENSE.nvim-{release_key}.txt"
-            runtime = sum(1 for name in names if name.startswith(f"{root}share/nvim/runtime/"))
-            if licence not in names:
-                problems.append(f"missing {licence}")
-            version = f"{root}VERSION"
-            pinned = wheel_spec.releases[release_key].version
-            found = wheel.read(version).decode().strip() if version in names else None
-            if found != pinned:
-                problems.append(f"{version} says {found}, the pin is {pinned}")
-            if runtime < MIN_RUNTIME_FILES:
-                problems.append(f"{root}: only {runtime} runtime files")
-            if exe not in names:
-                problems.append(f"missing {exe}")
-                continue
+        info_name = f"{PAYLOAD}build.json"
+        info = json.loads(wheel.read(info_name)) if info_name in names else {}
+        expected = {
+            "version": spec.version,
+            "line": line,
+            "neovim": spec.build.version,
+            "platform": spec.platform.key,
+            "tag": tag,
+        }
+        if info != expected:
+            problems.append(f"build.json is {info}, expected {expected}")
+        exe = f"{PAYLOAD}bin/{spec.platform.exe}"
+        runtime = sum(1 for name in names if name.startswith(f"{PAYLOAD}share/nvim/runtime/"))
+        if runtime < MIN_RUNTIME_FILES:
+            problems.append(f"only {runtime} runtime files")
+        if f"{PAYLOAD}LICENSE.nvim-{line}.txt" not in names:
+            problems.append(f"missing {PAYLOAD}LICENSE.nvim-{line}.txt")
+        if exe not in names:
+            problems.append(f"missing {exe}")
+        else:
             mode = wheel.getinfo(exe).external_attr >> 16
             if not exe.endswith(".exe") and mode and not mode & 0o111:
                 problems.append(f"{exe} is not executable")
@@ -109,30 +103,20 @@ def check(path: Path) -> List[str]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("wheels", nargs="*", type=Path, help="default: dist/*.whl")
-    parser.add_argument("--expect-version", help="every wheel must carry this version")
     args = parser.parse_args(argv)
-    wheels = args.wheels or sorted((ROOT / "dist").glob("*.whl"))
+    wheels = args.wheels or sorted((lines.ROOT / "dist").glob("*.whl"))
     if not wheels:
         parser.error("no wheels given and none in dist/")
-
+    data = lines.load()
     failed = 0
-    versions = set()
     for wheel in wheels:
-        match = WHEEL_NAME.match(wheel.name)
-        versions.add(match.group("version") if match else None)
-        problems = check(wheel)
+        problems = check(wheel, data)
         print(f"{wheel.name}: {'FAILED' if problems else 'OK'}")
         for problem in problems:
             print(f"  - {problem}")
         failed += bool(problems)
-    if len(versions) > 1:
-        print(f"the wheels carry different versions: {sorted(map(str, versions))}")
-        failed += 1
-    if args.expect_version and versions != {args.expect_version}:
-        print(f"expected version {args.expect_version}, found {sorted(map(str, versions))}")
-        failed += 1
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

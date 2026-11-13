@@ -1,15 +1,14 @@
 name: upstream
 
-# Neovim ships a patch release every few weeks, and nothing else in this repo
-# would notice: ci.yml only runs when *we* change something. This job asks
-# GitHub whether a pin is behind, so staleness shows up as a red build instead
-# of as a user asking why `setup 0.12` installs an old patch.
+# Neovim ships patch releases every few weeks (and its glibc 2.17 builds in
+# neovim-releases follow later), and nothing else here would notice. Every
+# Monday this runs `scripts/pins.py update`: pins move to the newest patches,
+# with the checksums GitHub publishes, and each changed line's `k` goes up.
+# Any change becomes a pull request (branch pins/update) with CI started on
+# it; merging it and running the release workflow publishes those lines.
 #
-# It also re-verifies every pinned sha256 against the checksum Neovim
-# published, which catches a mistyped or silently re-uploaded archive.
-#
-# The only output is a failing job (and the log explaining which pin to bump);
-# it builds nothing and publishes nothing.
+# Needs "Allow GitHub Actions to create and approve pull requests" in the
+# repository's Settings > Actions > General.
 
 on:
   schedule:
@@ -17,7 +16,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write  # push the pin branch
+  pull-requests: write  # open its PR
+  actions: write  # start CI on it (PRs opened by the bot do not trigger CI)
 
 concurrency:
   group: ${{ github.workflow }}
@@ -25,17 +26,29 @@ concurrency:
 
 jobs:
   pins:
-    name: pins match Neovim's releases
+    name: bump pins to Neovim's newest patches
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      # nothing is installed on purpose: the check uses only the standard
-      # library and this repo's own source tree, so there is no tool pin here
-      # to keep in sync with ci.yml
-      - name: compare the pins with GitHub
-        run: python scripts/check_upstream.py --strict
+      # standard library only: nothing to install
+      - name: move the pins to the newest patches
+        run: python scripts/pins.py update
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: open (or refresh) the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet; then echo "every pin is current"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C pins/update
+          git commit -am "pins: move to Neovim's newest patches"
+          git push --force origin pins/update
+          gh pr view pins/update >/dev/null 2>&1 || gh pr create --head pins/update \
+            --title "pins: move to Neovim's newest patches" \
+            --body "Opened by the weekly upstream check. Review lines.json, wait for CI, merge, then run the release workflow."
+          gh workflow run ci.yml --ref pins/update
