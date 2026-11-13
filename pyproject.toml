@@ -28,11 +28,9 @@ classifiers = [
 ]
 
 [project.urls]
-# point at the repository as it exists today; GitHub redirects if it is
-# renamed to fast-nvim-latest
-Homepage = "https://github.com/nicholas/fast-nvim"
-Issues = "https://github.com/nicholas/fast-nvim/issues"
-Source = "https://github.com/nicholas/fast-nvim"
+Homepage = "https://github.com/nickeisenberg/fast-nvim-latest"
+Issues = "https://github.com/nickeisenberg/fast-nvim-latest/issues"
+Source = "https://github.com/nickeisenberg/fast-nvim-latest"
 
 [project.scripts]
 fast-nvim-latest = "fast_nvim_latest.cli:main"
