@@ -152,17 +152,25 @@ def test_releases_without_a_floor_are_never_a_problem(monkeypatch):
 
 
 def test_host_glibc_parses_what_confstr_reports(monkeypatch):
+    """``os.confstr`` only exists on POSIX, so install it instead of patching it."""
     monkeypatch.setattr(platforms, "_host_family", lambda: "linux")
-    monkeypatch.setattr(platforms.os, "confstr", lambda name: "glibc 2.34")
+    monkeypatch.setattr(platforms.os, "confstr", lambda name: "glibc 2.34", raising=False)
     assert platforms.host_glibc() == (2, 34)
 
-    monkeypatch.setattr(platforms.os, "confstr", lambda name: "musl 1.2.4")
+    monkeypatch.setattr(platforms.os, "confstr", lambda name: "musl 1.2.4", raising=False)
     assert platforms.host_glibc() == (1, 2)
 
     def explode(name):
         raise ValueError("no such confstr")
 
-    monkeypatch.setattr(platforms.os, "confstr", explode)
+    monkeypatch.setattr(platforms.os, "confstr", explode, raising=False)
+    assert platforms.host_glibc() is None
+
+
+def test_host_glibc_survives_a_libc_without_confstr(monkeypatch):
+    """Windows has no ``os.confstr`` at all: that must read as "unknown"."""
+    monkeypatch.setattr(platforms, "_host_family", lambda: "linux")
+    monkeypatch.delattr(platforms.os, "confstr", raising=False)
     assert platforms.host_glibc() is None
 
 

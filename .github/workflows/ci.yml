@@ -53,7 +53,9 @@ jobs:
       - name: install test tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest==9.1.1 build==1.6.1 twine==7.0.0
+          # pinned, and marker-guarded: their newest versions need Python
+          # >= 3.10 while this package still supports (and tests) 3.9
+          python -m pip install "pytest==9.1.1; python_version >= '3.10'" "pytest==8.4.2; python_version < '3.10'" "build==1.6.1; python_version >= '3.10'" "build==1.4.0; python_version < '3.10'" "twine==7.0.0; python_version >= '3.10'" "twine==6.2.0; python_version < '3.10'"
       - name: unit tests (no network, fake binary)
         shell: bash
         run: |

@@ -159,6 +159,7 @@ def test_setup_cross_platform_needs_a_prefix(fake_bundle, capsys):
     assert "not the platform you are on" in capsys.readouterr().err
 
 
+@POSIX_ONLY
 def test_a_cross_platform_install_warns_before_replacing_this_machines_build(
     fake_bundle, prefix, capsys, monkeypatch
 ):
