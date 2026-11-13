@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install a built wheel into a clean venv and use it like a real user would.
 
-    python scripts/smoke_test.py dist/fast_nvim_release-0.2.0-py3-none-manylinux_2_34_x86_64.whl
+    python scripts/smoke_test.py dist/fast_nvim_release-0.2.1-py3-none-manylinux_2_34_x86_64.whl
 
 Checks ``version``, ``run``, ``setup`` of more than one release, and that the
 installed nvim resolves its ``$VIMRUNTIME`` inside the prefix (i.e. the runtime

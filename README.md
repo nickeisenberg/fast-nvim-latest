@@ -5,7 +5,7 @@ Ship Neovim releases in a pip wheel.
 ```console
 $ pip install fast-nvim-release
 $ fast-nvim-release setup
-fast-nvim-release 0.2.0 (Neovim v0.12.6)
+fast-nvim-release 0.2.1 (Neovim v0.12.6)
    release 0.12 (v0.12.6)
    target  linux-x86_64 (linux, x86_64)
    prefix  /home/you/.local

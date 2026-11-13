@@ -66,12 +66,12 @@ A wheel can only contain one platform's executables, so each release publishes
 **six wheels with the same version and different platform tags**:
 
 ```
-fast_nvim_release-0.2.0-py3-none-manylinux_2_34_x86_64.whl   35.9 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-manylinux_2_34_aarch64.whl  24.3 MB  2 releases (no 0.10 arm64)
-fast_nvim_release-0.2.0-py3-none-macosx_11_0_x86_64.whl      31.5 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-macosx_11_0_arm64.whl       30.6 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-win_amd64.whl               36.4 MB  3 releases
-fast_nvim_release-0.2.0-py3-none-win_arm64.whl               25.9 MB  2 releases (no 0.10)
+fast_nvim_release-0.2.1-py3-none-manylinux_2_34_x86_64.whl   35.9 MB  3 releases
+fast_nvim_release-0.2.1-py3-none-manylinux_2_34_aarch64.whl  24.3 MB  2 releases (no 0.10 arm64)
+fast_nvim_release-0.2.1-py3-none-macosx_11_0_x86_64.whl      31.5 MB  3 releases
+fast_nvim_release-0.2.1-py3-none-macosx_11_0_arm64.whl       30.6 MB  3 releases
+fast_nvim_release-0.2.1-py3-none-win_amd64.whl               36.4 MB  3 releases
+fast_nvim_release-0.2.1-py3-none-win_arm64.whl               25.9 MB  2 releases (no 0.10)
 ```
 
 Each wheel carries its releases for one platform (~100 MiB installed), so
