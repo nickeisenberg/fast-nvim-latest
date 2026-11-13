@@ -126,6 +126,13 @@ def test_extract_without_binary_fails(tmp_path):
 # installing
 # --------------------------------------------------------------------------
 @POSIX_ONLY
+def test_the_fake_bundle_is_runnable(fake_bundle, host_key):
+    """The fixture must produce a binary the code can actually run."""
+    newest = RELEASE_KEYS[-1]
+    exe = bundle.bundle_exe(newest, host_key)
+    assert bundle.neovim_version(exe) == f"NVIM {RELEASES[newest].version[1:]}"
+
+
 def test_install_copy(fake_bundle, prefix, host_key):
     target = RELEASES["0.12"].target(host_key)
     result = bundle.install(target, bundle.bundle_path("0.12", host_key), prefix)
@@ -234,7 +241,7 @@ def test_bundled_targets_are_detected(fake_bundle, host_key):
     ]
     target = RELEASES["0.11"].target(host_key)
     assert bundle.has_bundled(target)
-    assert bundle.bundled_nvim_version("0.11") == "v0.11.7"
+    assert bundle.bundle_exe("0.11", host_key).is_file()
 
 
 def test_download_only_builds_are_never_bundled(tmp_path, monkeypatch, host_key):

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import List
@@ -141,8 +140,3 @@ def host_target() -> Target:
 def prefix(tmp_path) -> Path:
     return tmp_path / "prefix"
 
-
-@pytest.mark.skipif(os.name == "nt", reason="fake nvim is a POSIX shell script")
-def test_fake_bundle_is_runnable(fake_bundle, host_key):
-    exe = bundle.bundle_exe(RELEASE_KEYS[-1], host_key)
-    assert bundle.neovim_version(exe) == f"NVIM {RELEASES[RELEASE_KEYS[-1]].version[1:]}"
