@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from fast_nvim_release import bundle  # noqa: E402
+from fast_nvim_release.cli import progress_printer  # noqa: E402
 from fast_nvim_release.platforms import (  # noqa: E402
     RELEASE_KEYS,
     RELEASES,
@@ -54,27 +55,6 @@ FAILED = "failed"
 
 def say(message: str) -> None:
     print(message, flush=True)
-
-
-def _progress(target: Target):
-    state = {"last": -1}
-
-    def report(done: int, total: int) -> None:
-        if not sys.stderr.isatty():
-            return
-        percent = int(done * 100 / total) if total else 0
-        if percent == state["last"]:
-            return
-        state["last"] = percent
-        done_text = bundle.human_size(done)
-        total_text = bundle.human_size(total)
-        sys.stderr.write(f"\r  {target.asset} {percent:>3}%  {done_text}/{total_text}   ")
-        sys.stderr.flush()
-        if done >= total:
-            sys.stderr.write("\n")
-            sys.stderr.flush()
-
-    return report
 
 
 def _dir_size(path: Path) -> int:
@@ -156,7 +136,9 @@ def vendor(
 
     say(f"  fetching {target.asset}")
     try:
-        archive = bundle.fetch_archive(target, offline=offline, progress=_progress(target))
+        archive = bundle.fetch_archive(
+            target, offline=offline, progress=progress_printer(target.asset)
+        )
     except bundle.FastNvimError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return FAILED

@@ -907,3 +907,224 @@ def test_a_cached_archive_that_does_not_match_the_pin_is_dropped(tmp_path, monke
     with pytest.raises(bundle.FastNvimError):
         bundle.fetch_archive(target)
     assert not cached.exists()  # the stale entry was dropped, not used
+
+
+# --------------------------------------------------------------------------
+# review fixes: escapes, foreign files, environment, locking
+# --------------------------------------------------------------------------
+@POSIX_ONLY
+def test_extract_rejects_a_symlink_that_escapes_through_another_symlink(tmp_path):
+    """Each link looks harmless as text; together they lead out of the tree."""
+    archive = tmp_path / "chained.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+
+        def link(name, target):
+            info = tarfile.TarInfo("nvim-linux-x86_64/" + name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            tar.addfile(info)
+
+        link("lib/nvim/d", "../..")
+        link("lib/nvim/d/lib/nvim/e", "../../../..")
+        data = b"escaped\n"
+        info = tarfile.TarInfo("nvim-linux-x86_64/lib/nvim/e/PWNED")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+    dest = tmp_path / "deep" / "er" / "out"
+    with pytest.raises(bundle.FastNvimError):
+        bundle.extract_archive(_target(), archive, dest)
+    assert not list(tmp_path.rglob("PWNED"))
+    assert not dest.exists()
+
+
+@POSIX_ONLY
+def test_extract_never_writes_a_file_through_an_existing_symlink(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    archive = tmp_path / "overwrite.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        link = tarfile.TarInfo("nvim-linux-x86_64/share/nvim/runtime/x")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "y"
+        tar.addfile(link)
+        for name in ("share/nvim/runtime/x", "bin/nvim"):
+            info = tarfile.TarInfo("nvim-linux-x86_64/" + name)
+            info.size = 3
+            tar.addfile(info, io.BytesIO(b"new"))
+
+    dest = bundle.extract_archive(_target(), archive, tmp_path / "out")
+    runtime_file = dest / "share" / "nvim" / "runtime" / "x"
+    assert not runtime_file.is_symlink()
+    assert runtime_file.read_bytes() == b"new"
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_install_refuses_a_foreign_bin_entry_the_build_would_overwrite(
+    fake_bundle, prefix, host_key
+):
+    """Windows builds ship helpers next to nvim.exe; a user's own copy is not ours."""
+    target = RELEASES["0.12"].target(host_key)
+    source = bundle.bundle_path("0.12", host_key)
+    (source / "bin" / "helper").write_text("from the build\n", encoding="utf-8")
+    (prefix / "bin").mkdir(parents=True)
+    mine = prefix / "bin" / "helper"
+    mine.write_text("mine\n", encoding="utf-8")
+
+    with pytest.raises(bundle.FastNvimError) as excinfo:
+        bundle.install(target, source, prefix)
+    assert str(mine) in str(excinfo.value)
+    assert mine.read_text(encoding="utf-8") == "mine\n"
+    assert not bundle.is_managed(prefix, "0.12", host_key)
+
+    bundle.install(target, source, prefix, replace=True)  # what --force passes
+    assert mine.read_text(encoding="utf-8") == "from the build\n"
+
+
+def test_a_managed_prefix_still_protects_bin_entries_it_never_owned(fake_bundle, prefix, host_key):
+    target = RELEASES["0.12"].target(host_key)
+    source = bundle.bundle_path("0.12", host_key)
+    bundle.install(target, source, prefix)
+    mine = prefix / "bin" / "helper"
+    mine.write_text("mine\n", encoding="utf-8")
+    (source / "bin" / "helper").write_text("new in this build\n", encoding="utf-8")
+
+    with pytest.raises(bundle.FastNvimError):
+        bundle.install(target, source, prefix)
+    assert mine.read_text(encoding="utf-8") == "mine\n"
+    assert bundle.is_complete(prefix, "0.12", host_key)
+
+
+def test_a_bin_entry_this_tool_installed_is_replaced_without_force(fake_bundle, prefix, host_key):
+    target = RELEASES["0.12"].target(host_key)
+    source = bundle.bundle_path("0.12", host_key)
+    (source / "bin" / "helper").write_text("v1\n", encoding="utf-8")
+    bundle.install(target, source, prefix)
+    (source / "bin" / "helper").write_text("v2\n", encoding="utf-8")
+    bundle.install(target, source, prefix)
+    assert (prefix / "bin" / "helper").read_text(encoding="utf-8") == "v2\n"
+
+
+@POSIX_ONLY
+def test_a_failed_upgrade_of_the_same_build_keeps_it_reported_as_installed(
+    fake_bundle, prefix, host_key, monkeypatch
+):
+    target = RELEASES["0.12"].target(host_key)
+    source = bundle.bundle_path("0.12", host_key)
+    bundle.install(target, source, prefix)
+
+    def explode(source, dest):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(bundle, "_copy_tree", explode)
+    with pytest.raises(OSError):
+        bundle.install(target, source, prefix)
+    assert bundle.is_complete(prefix, "0.12", host_key)
+
+
+@POSIX_ONLY
+def test_the_runtime_probe_ignores_the_users_vimruntime(monkeypatch, tmp_path):
+    seen = {}
+
+    def spy(cmd, **kwargs):
+        seen.update(kwargs)
+        raise OSError("not really running anything")
+
+    monkeypatch.setenv("VIMRUNTIME", "/somewhere/else")
+    monkeypatch.setenv("VIM", "/somewhere")
+    monkeypatch.setattr(bundle.subprocess, "run", spy)
+    with pytest.raises(bundle.FastNvimError):
+        bundle._run(tmp_path / "nvim", ["--version"], 5)
+    assert "VIMRUNTIME" not in seen["env"]
+    assert "VIM" not in seen["env"]
+    assert seen["env"].get("PATH") == os.environ.get("PATH")
+
+
+def test_a_held_lock_makes_a_second_caller_wait_and_give_up(tmp_path):
+    import threading
+
+    lock = tmp_path / "locks" / ".lock"
+    errors = []
+
+    def contender():
+        try:
+            with bundle._lock(lock, timeout=0.3):
+                errors.append("acquired a lock that was held")  # pragma: no cover
+        except bundle.FastNvimError as exc:
+            errors.append(str(exc))
+
+    with bundle._lock(lock):
+        thread = threading.Thread(target=contender)
+        thread.start()
+        thread.join(10)
+    assert len(errors) == 1
+    assert "holding" in errors[0]
+    # and once released it can be taken again straight away
+    with bundle._lock(lock, timeout=0.3):
+        pass
+    assert not lock.exists()
+
+
+def test_a_waiter_never_shares_the_lock_with_a_newcomer(tmp_path):
+    """The holder deletes the lock file; whoever was waiting must start over."""
+    import threading
+    import time
+
+    lock = tmp_path / ".lock"
+    inside = []
+    overlaps = []
+
+    def worker():
+        with bundle._lock(lock, timeout=10):
+            inside.append(1)
+            if len(inside) > 1:
+                overlaps.append(len(inside))  # pragma: no cover
+            time.sleep(0.02)
+            inside.pop()
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert overlaps == []
+
+
+def test_a_malformed_content_length_only_affects_progress(tmp_path, monkeypatch):
+    class Response:
+        def __init__(self):
+            self.headers = {"Content-Length": "lots"}
+            self.rest = b"hi"
+
+        def read(self, size):
+            data, self.rest = self.rest, b""
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(bundle.urllib.request, "urlopen", lambda request, timeout=None: Response())
+    target = _target(sha256=hashlib.sha256(b"hi").hexdigest(), size=2)
+    seen = []
+    bundle._download(target, tmp_path / "a.tar.gz", progress=lambda d, t: seen.append(t))
+    assert seen == [2]
+
+
+@POSIX_ONLY
+def test_a_cache_other_users_can_write_is_reported(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("FAST_NVIM_RELEASE_CACHE_DIR", str(cache))
+    cache.chmod(0o755)
+    assert bundle.cache_is_shared() is False
+    cache.chmod(0o777)
+    try:
+        assert bundle.cache_is_shared() is True
+    finally:
+        cache.chmod(0o755)
+    # not created yet: the parent decides, and a private parent is fine
+    monkeypatch.setenv("FAST_NVIM_RELEASE_CACHE_DIR", str(cache / "not-yet"))
+    assert bundle.cache_is_shared() is False

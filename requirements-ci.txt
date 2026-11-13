@@ -1,0 +1,10 @@
+# Test and packaging tools for ci.yml and release.yml (one list, so a release
+# can only use pins the CI matrix has proven).  Pinned, and marker-guarded:
+# their newest versions need Python >= 3.10 while this package still supports
+# (and tests) 3.9.
+pytest==9.1.1; python_version >= '3.10'
+pytest==8.4.2; python_version < '3.10'
+build==1.6.1; python_version >= '3.10'
+build==1.4.0; python_version < '3.10'
+twine==7.0.0; python_version >= '3.10'
+twine==6.2.0; python_version < '3.10'

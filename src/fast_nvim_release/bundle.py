@@ -54,10 +54,31 @@ MARKER_DIR = Path("share") / "fast-nvim-release"
 
 USER_AGENT = f"fast-nvim-release/{__version__} (+https://pypi.org/project/fast-nvim-release/)"
 
-#: How long an install may hold the prefix lock before it is assumed to be a
-#: leftover from a killed process (seconds).
+#: How long a second process waits for the prefix (or cache) lock before it
+#: gives up (seconds).  The lock is an OS-level file lock, so a killed holder
+#: releases it at once; this only bounds the wait behind a live one.
 LOCK_TIMEOUT = 60.0
-LOCK_STALE_AFTER = 3600.0
+
+if os.name == "nt":  # pragma: no cover - exercised on the Windows CI runners
+    import msvcrt
+
+    def _try_lock(handle: int) -> bool:
+        try:
+            os.lseek(handle, 0, os.SEEK_SET)
+            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+else:
+    import fcntl
+
+    def _try_lock(handle: int) -> bool:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        return True
 
 
 class FastNvimError(RuntimeError):
@@ -67,7 +88,7 @@ class FastNvimError(RuntimeError):
 # --------------------------------------------------------------------------
 # vendored bundles (inside the installed wheel)
 # --------------------------------------------------------------------------
-def _exe_ok(path: Path) -> bool:
+def _has_file(path: Path) -> bool:
     return path.is_file()
 
 
@@ -93,7 +114,7 @@ def vendored_platforms(release_key: str) -> List[str]:
     return [
         target.key
         for target in release.targets
-        if release.bundled(target.key) and _exe_ok(bundle_exe(release_key, target.key))
+        if release.bundled(target.key) and _has_file(bundle_exe(release_key, target.key))
     ]
 
 
@@ -117,7 +138,7 @@ def has_bundled(target: Target) -> bool:
     """True if ``target`` ships in this wheel (and not merely downloadable)."""
     if not target.release.bundled(target.key):
         return False
-    return _exe_ok(bundle_exe(target.release_key, target.key))
+    return _has_file(bundle_exe(target.release_key, target.key))
 
 
 def _read_json(path: Path) -> Dict[str, object]:
@@ -177,7 +198,28 @@ def default_prefix() -> Path:
         base = os.environ.get("LOCALAPPDATA")
         root = Path(base) if base else Path.home() / "AppData" / "Local"
         return normalize(root / "fast-nvim-release")
-    return Path.home() / ".local"
+    return normalize(Path.home() / ".local")
+
+
+def cache_is_shared() -> bool:
+    """True if users other than this one can write to the cache directory.
+
+    Extracted trees in the cache are used as they are, so anyone who can write
+    there can change the Neovim that ``setup`` installs.  That can be a
+    deliberate choice (a team cache), so callers warn rather than refuse.
+    """
+    if os.name == "nt":
+        return False
+    root = cache_root()
+    for path in (root, *root.parents):
+        try:
+            info = path.stat()
+        except OSError:
+            continue  # not created yet: the first existing ancestor decides
+        if info.st_mode & stat.S_ISVTX and path != root:
+            return False  # a sticky dir (/tmp) only lets owners replace entries
+        return info.st_uid != os.getuid() or bool(info.st_mode & 0o022)
+    return False
 
 
 def origin(target: Target) -> Tuple[str, Optional[Path]]:
@@ -192,7 +234,7 @@ def origin(target: Target) -> Tuple[str, Optional[Path]]:
     if has_bundled(target):
         return "pip wheel", bundle_path(target.release_key, target.key)
     tree = cached_tree(target)
-    if _exe_ok(tree / "bin" / target.exe):
+    if _has_file(tree / "bin" / target.exe):
         return "cache", tree
     archive = cached_archive(target)
     if archive.is_file():
@@ -213,16 +255,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _human_size(num: float) -> str:
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if num < 1024 or unit == "GiB":
-            return f"{num:.1f} {unit}" if unit != "B" else f"{num:.0f} B"
-        num /= 1024.0
-    return f"{num:.1f} GiB"
-
-
 def human_size(num: float) -> str:
-    return _human_size(num)
+    if num < 1024:
+        return f"{num:.0f} B"
+    for unit in ("KiB", "MiB"):
+        num /= 1024.0
+        if num < 1024:
+            return f"{num:.1f} {unit}"
+    return f"{num / 1024.0:.1f} GiB"
 
 
 def _pinned(target: Target) -> str:
@@ -263,7 +303,10 @@ def _download(
     try:
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
-                total = int(response.headers.get("Content-Length") or target.size)
+                try:
+                    total = int(response.headers.get("Content-Length") or target.size)
+                except ValueError:  # a malformed header only affects the progress bar
+                    total = target.size
                 with partial.open("wb") as out:
                     while True:
                         chunk = response.read(1024 * 256)
@@ -348,15 +391,39 @@ def _strip(relative: str, prefix: str) -> str:
     return relative
 
 
-def _safe_link_target(relative: str, linkname: str) -> Optional[str]:
-    """Validate a symlink from ``relative``; ``None`` if it escapes ``dest``."""
+def _link_stays_inside(relative: str, linkname: str) -> bool:
+    """True if a symlink at ``relative`` pointing to ``linkname`` stays in the tree.
+
+    This is the textual check; :func:`_contained` repeats it against the real
+    file system, which also catches links that only escape through another link.
+    """
     if not linkname or os.path.isabs(linkname):
-        return None
+        return False
     base = os.path.dirname(relative)
     resolved = os.path.normpath(os.path.join(base, linkname))
-    if resolved == ".." or resolved.startswith(".." + os.sep):
-        return None
-    return linkname
+    return not (resolved == ".." or resolved.startswith(".." + os.sep))
+
+
+def _contained(root: Path, path: Union[str, Path]) -> bool:
+    """True if ``path``, with every symlink resolved, is ``root`` or inside it."""
+    base = os.path.normcase(os.path.realpath(root))
+    real = os.path.normcase(os.path.realpath(path))
+    return real == base or real.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _checked_out(archive: Path, dest: Path, relative: str, name: str) -> Path:
+    """``dest / relative``, refusing a member whose directory leaves ``dest``.
+
+    An earlier member may have been a symlink (``lib/nvim/d -> ../..``), so a
+    path that looks harmless as text can still land outside ``dest`` once the
+    file system follows that link.
+    """
+    out = dest / relative
+    if not _contained(dest, out.parent):
+        raise FastNvimError(
+            f"archive {archive.name} writes outside the tree through a symlink: {name}"
+        )
+    return out
 
 
 def _extract_tar(archive: Path, dest: Path, strip_prefix: str) -> int:
@@ -367,21 +434,25 @@ def _extract_tar(archive: Path, dest: Path, strip_prefix: str) -> int:
             if relative is None:
                 continue
             relative = _strip(relative, strip_prefix)
-            if relative is None or not _keep(relative):
+            if not _keep(relative):
                 continue
-            out = dest / relative
+            out = _checked_out(archive, dest, relative, member.name)
             if member.isdir():
+                if out.is_symlink():
+                    out.unlink()  # never create directories through a link
                 out.mkdir(parents=True, exist_ok=True)
                 continue
             if member.issym():
-                if _safe_link_target(relative, member.linkname) is None:
+                if not _link_stays_inside(relative, member.linkname) or not _contained(
+                    dest, os.path.join(os.path.realpath(out.parent), member.linkname)
+                ):
                     raise FastNvimError(
                         f"archive {archive.name} contains an unsafe symlink: "
                         f"{member.name} -> {member.linkname}"
                     )
                 out.parent.mkdir(parents=True, exist_ok=True)
                 if out.is_symlink() or out.exists():
-                    out.unlink()
+                    _remove(out)
                 os.symlink(member.linkname, out)
                 count += 1
                 continue
@@ -391,6 +462,8 @@ def _extract_tar(archive: Path, dest: Path, strip_prefix: str) -> int:
             if source is None:
                 continue
             out.parent.mkdir(parents=True, exist_ok=True)
+            if out.is_symlink():
+                out.unlink()  # write a new file, never through an existing link
             with source, out.open("wb") as handle:
                 shutil.copyfileobj(source, handle)
             mode = member.mode & 0o777
@@ -408,9 +481,9 @@ def _extract_zip(archive: Path, dest: Path, strip_prefix: str) -> int:
             if relative is None:
                 continue
             relative = _strip(relative, strip_prefix)
-            if relative is None or not _keep(relative):
+            if not _keep(relative):
                 continue
-            out = dest / relative
+            out = _checked_out(archive, dest, relative, info.filename)
             if info.is_dir():
                 out.mkdir(parents=True, exist_ok=True)
                 continue
@@ -506,7 +579,7 @@ def ensure_bundle(
     if has_bundled(target):
         return bundle_path(target.release_key, target.key), "pip wheel"
     tree = cached_tree(target)
-    if _exe_ok(tree / "bin" / target.exe):
+    if _has_file(tree / "bin" / target.exe):
         return tree, "cache"
     had_archive = cached_archive(target).is_file()
     archive = fetch_archive(target, offline=offline, progress=progress)
@@ -514,7 +587,7 @@ def ensure_bundle(
     # two `setup` runs (or a setup and a `run`) may want the same cache entry;
     # extract_archive swaps a shared <tree>.old aside, so let one at a time in
     with _lock(cache_lock(tree)):
-        if _exe_ok(tree / "bin" / target.exe):  # the other process just finished
+        if _has_file(tree / "bin" / target.exe):  # the other process just finished
             return tree, "cache"
         return extract_archive(target, archive, tree), "cache" if had_archive else "download"
 
@@ -575,7 +648,7 @@ def is_complete(prefix: Path, release_key: str, platform_key: str) -> bool:
     target = RELEASES[release_key].target(platform_key)
     if target is None:
         return False
-    return _exe_ok(Path(prefix) / "bin" / target.exe)
+    return _has_file(Path(prefix) / "bin" / target.exe)
 
 
 def installed_builds(prefix: Path) -> List[Tuple[str, str]]:
@@ -612,71 +685,58 @@ def installed_releases(prefix: Path) -> List[str]:
     return sorted({target.release_key for target in installed_targets(prefix)})
 
 
-def _lock_is_stale(path: Path) -> bool:
-    """True if nobody is holding ``path`` any more (killed process, old file).
-
-    On Windows we cannot probe a pid (``os.kill(pid, 0)`` is not a no-op
-    there), so a leftover lock is only taken over by age.  A waiter gives up
-    after ``LOCK_TIMEOUT`` with a message naming the file, so the worst case is
-    a 60-second stall followed by "remove it if that is not the case" -- not a
-    wedged prefix.
-    """
-    try:
-        age = time.time() - path.stat().st_mtime
-    except OSError:  # pragma: no cover - released in the meantime
-        return True
-    if age > LOCK_STALE_AFTER:
-        return True
-    if os.name == "nt":  # os.kill(pid, 0) would terminate the process there
-        return False
-    try:
-        pid = int(path.read_text(encoding="ascii").strip() or "0")
-    except (OSError, ValueError):
-        return False
-    if pid <= 0:  # pragma: no cover - half-written lock
-        return age > 5.0
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:  # pragma: no cover - exists but belongs to another user
-        return False
-    return False
-
-
 @contextlib.contextmanager
 def _lock(path: Path, timeout: float = LOCK_TIMEOUT) -> Iterator[None]:
-    """Serialize installs into one prefix.
+    """Serialize installs into one prefix (or extractions into one cache tree).
 
-    A lock left behind by a killed process is detected by its pid (or, as a
-    last resort, by age) so a stuck install cannot wedge the prefix forever.
+    The lock is an OS file lock (``flock`` / ``msvcrt.locking``), which the
+    kernel drops when its holder exits, so a killed install can never leave
+    the prefix wedged and no guessing about stale pids is needed.
+
+    The lock file is removed on release.  A waiter may then hold a lock on a
+    file that is no longer at ``path``, so after locking it checks that the
+    file it holds is still the one at ``path`` and starts again if not.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout
     while True:
-        try:
-            handle = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            break
-        except FileExistsError:
-            if _lock_is_stale(path):
-                path.unlink(missing_ok=True)
-                continue
-            if time.monotonic() > deadline:
-                raise FastNvimError(
-                    f"another fast-nvim-release process is holding {path} "
-                    "(remove it if that is not the case)"
-                ) from None
-            time.sleep(0.1)
+        handle = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+        if _try_lock(handle):
+            try:
+                current = os.fstat(handle).st_ino == os.stat(path).st_ino
+            except OSError:  # removed by the previous holder in the meantime
+                current = False
+            if current:
+                break
+        os.close(handle)
+        if time.monotonic() > deadline:
+            raise FastNvimError(
+                f"another fast-nvim-release process is holding {path}; try again "
+                "once it has finished"
+            )
+        time.sleep(0.1)
     try:
-        try:
+        if os.name == "nt":  # pragma: no cover - Windows
+            # the locked byte cannot be written there, and the pid is only a
+            # hint for humans, so Windows lock files stay empty
+            yield
+        else:
+            os.ftruncate(handle, 0)
             os.write(handle, f"{os.getpid()}\n".encode("ascii"))
-        finally:
-            # close first: a failed write (a full disk, a quota) must not leak
-            # the descriptor
-            os.close(handle)
-        yield
+            yield
     finally:
-        path.unlink(missing_ok=True)
+        if os.name == "nt":  # pragma: no cover - Windows
+            # an open file cannot be deleted there, so release first; a waiter
+            # that has it open makes the delete fail, which is harmless
+            os.close(handle)
+            with contextlib.suppress(OSError):
+                path.unlink()
+        else:
+            # delete while still holding the lock, so nobody can lock this file
+            # after we let go and believe it is still the live one
+            with contextlib.suppress(OSError):
+                path.unlink()
+            os.close(handle)
 
 
 def _remove(path: Path) -> None:
@@ -874,6 +934,44 @@ def _swap_parts(staging: Path, prefix: Path, *, merge_bin: bool) -> None:
             os.replace(staged, target)
 
 
+def _refuse_foreign_files(
+    prefix: Path,
+    target: Target,
+    bin_names: List[str],
+    previous: Dict[str, object],
+    managed: bool,
+    others: List[Tuple[str, str]],
+) -> None:
+    """Fail if installing would overwrite files fast-nvim-release does not own."""
+    owned = set(_marker_bin_names(previous))
+    for release_key, platform_key in others:
+        owned.update(_marker_bin_names(marker_info(prefix, release_key, platform_key)))
+    if managed:
+        owned.add(target.exe)  # a torn marker still names a prefix we wrote
+    foreign = [
+        prefix / "bin" / name
+        for name in bin_names
+        if name not in owned
+        and ((prefix / "bin" / name).exists() or (prefix / "bin" / name).is_symlink())
+    ]
+    if not managed and not others:
+        foreign += [
+            prefix / directory
+            for _part, directory in BUNDLE_PARTS
+            if directory != "bin" and (prefix / directory).exists()
+        ]
+    if foreign:
+        raise FastNvimError(
+            "{} already exist{} and {} not installed by fast-nvim-release:\n  {}\n"
+            "  Re-run with --force to overwrite, or pick another --prefix.".format(
+                "these" if len(foreign) > 1 else str(foreign[0]),
+                "" if len(foreign) > 1 else "s",
+                "were" if len(foreign) > 1 else "was",
+                "\n  ".join(str(path) for path in foreign),
+            )
+        )
+
+
 def install(
     target: Target,
     bundle_dir: Path,
@@ -896,23 +994,33 @@ def install(
     been written, so a failure while copying (a full disk, an unreadable source
     file) leaves the previous install exactly as it was instead of a mix of the
     two -- the same guarantee ``extract_archive`` gives the cache.
+
+    Without ``replace``, nothing the prefix holds that fast-nvim-release did not
+    put there is overwritten: not ``lib/nvim`` or ``share/nvim/runtime`` in an
+    unmanaged prefix, and not any entry of ``bin`` (Windows builds ship more
+    than ``nvim.exe``) that no marker records as ours.
     """
     prefix = normalize(prefix)
     bundle_dir = Path(bundle_dir)
     bin_source = bundle_dir / "bin"
     bin_names = sorted(entry.name for entry in bin_source.iterdir()) if bin_source.is_dir() else []
-    previous = marker_info(prefix, target.release_key, target.key)
     files = 0
     links = 0
     written: List[Path] = []
     staging = prefix / MARKER_DIR / ".staging"
+    marker = marker_file(prefix, target.release_key, target.key)
 
     with _lock(prefix / MARKER_DIR / ".lock"):
+        # read under the lock: another `setup` may have changed it meanwhile
+        previous = marker_info(prefix, target.release_key, target.key)
         managed = is_managed(prefix, target.release_key, target.key)
         # another release or platform in this prefix is replaced, not merged
         others = [
             build for build in installed_builds(prefix) if build != (target.release_key, target.key)
         ]
+        if not replace:
+            _refuse_foreign_files(prefix, target, bin_names, previous, managed, others)
+        previous_marker = marker.read_bytes() if marker.is_file() else None
         # written before the copy: if this process dies half way, the next
         # `setup` recognises the prefix as its own instead of demanding --force
         _write_marker(
@@ -924,13 +1032,21 @@ def install(
             bin_names=bin_names,
             complete=False,
         )
+        swapping = False
         try:
             _remove(staging)  # left behind by a killed install
             files, links = _stage_parts(bundle_dir, staging, link=link)
             for part, destination in BUNDLE_PARTS:
                 if (bundle_dir / part).exists():
                     written.append(prefix / destination)
+            swapping = True
             _swap_parts(staging, prefix, merge_bin=True)
+        except BaseException:
+            if not swapping and previous_marker is not None:
+                # nothing in the prefix changed, so its marker must not either:
+                # a failed upgrade leaves the old install reported as installed
+                marker.write_bytes(previous_marker)
+            raise
         finally:
             _remove(staging)
 
@@ -974,11 +1090,16 @@ def _run(exe: Path, args: List[str], timeout: float) -> subprocess.CompletedProc
     callers parse stdout (``--version``'s first line, the ``$VIMRUNTIME`` we
     asked for), so merging the streams would corrupt the answer.
     """
+    # $VIMRUNTIME / $VIM in the caller's environment override where Neovim
+    # looks for its runtime, which would make the start-up check report the
+    # user's setting instead of what this install resolves on its own
+    env = {key: value for key, value in os.environ.items() if key not in ("VIMRUNTIME", "VIM")}
     try:
         return subprocess.run(
             [str(exe), *args],
             capture_output=True,
             timeout=timeout,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise FastNvimError(f"could not run {exe}: {exc}") from exc

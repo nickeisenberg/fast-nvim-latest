@@ -5,6 +5,7 @@
 ```console
 $ git clone git@github.com:nickeisenberg/fast-nvim-release.git
 $ cd fast-nvim-release
+$ python -m pip install -r requirements-ci.txt   # the pinned tools CI uses
 $ python -m pytest                 # the whole suite, no network needed
 $ python -m ruff check .           # lint (CI runs this)
 $ python -m ruff format --check .
@@ -12,6 +13,10 @@ $ python -m ruff format --check .
 
 The test suite runs against fake vendored builds, so it needs no Neovim
 downloads and works offline.
+
+`requirements-ci.txt` is the one list of tool pins for both `ci.yml` and
+`release.yml`. Every action in the workflows is pinned to a commit SHA (with
+the tag in a comment); bump the SHA and the comment together.
 
 ## Vendoring Neovim
 

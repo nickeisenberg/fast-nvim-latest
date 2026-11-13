@@ -19,7 +19,7 @@ import struct
 import sys
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Set, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -37,6 +37,7 @@ MACOSX = re.compile(r"^macosx_(?P<major>\d+)_(?P<minor>\d+)_(?P<arch>.+)$")
 WIN = re.compile(r"^win_(?P<arch>.+)$")
 GLIBC_SYMBOL = re.compile(rb"GLIBC_(\d+)\.(\d+)")
 
+PAYLOAD = "fast_nvim_release/_nvim/"
 PYPI_MAX_BYTES = 100 * 1024 * 1024
 # 0.10 ships 1876 runtime files, 0.12 ships 2116; anything far below
 # that means $VIMRUNTIME did not come along
@@ -156,6 +157,16 @@ def glibc_floor(data: bytes) -> Optional[Tuple[int, int]]:
 # --------------------------------------------------------------------------
 # the wheel
 # --------------------------------------------------------------------------
+def carried_builds(names: Iterable[str]) -> Set[Tuple[str, str]]:
+    """``(release, platform)`` pairs with files under ``_nvim/`` in a wheel."""
+    found = set()
+    for name in names:
+        if name.startswith(PAYLOAD) and name.count("/") > 2:
+            release_key, platform_key = name[len(PAYLOAD) :].split("/")[:2]
+            found.add((release_key, platform_key))
+    return found
+
+
 def _read_metadata(wheel: zipfile.ZipFile, names: List[str], suffix: str) -> str:
     for name in names:
         if name.endswith(suffix):
@@ -170,25 +181,15 @@ def _check_contents(path: Path, tag: str, platform) -> List[str]:
         wheel_meta = _read_metadata(wheel, names, ".dist-info/WHEEL")
         metadata = _read_metadata(wheel, names, ".dist-info/METADATA")
 
-        prefix = "fast_nvim_release/_nvim/"
-        releases = sorted(
-            {
-                name[len(prefix) :].split("/")[0]
-                for name in names
-                if name.startswith(prefix) and name.count("/") > 2
-            }
-            - {"BUILD_INFO.json"}
-        )
+        prefix = PAYLOAD
+        builds = carried_builds(names)
+        releases = sorted({release_key for release_key, _ in builds})
         # more than one release is expected, and more than one platform is
         # allowed (private/offline distributions), but this wheel's own
         # platform has to be there and every shipped release must be complete.
         if not releases:
             problems.append("the wheel carries no Neovim builds at all")
-        elif platform.key not in {
-            name[len(prefix) :].split("/")[1]
-            for name in names
-            if name.startswith(prefix) and name.count("/") > 2
-        }:
+        elif platform.key not in {platform_key for _, platform_key in builds}:
             problems.append(f"expected the {platform.key} build, found {releases}")
 
         index = "{}{}".format(prefix, "BUILD_INFO.json")
@@ -348,14 +349,9 @@ def missing_releases(path: Path) -> List[str]:
     platform = BY_TAG.get(match.group("tag"))
     if platform is None:
         return []
-    prefix = "fast_nvim_release/_nvim/"
     try:
         with zipfile.ZipFile(path) as wheel:
-            carried = {
-                name[len(prefix) :].split("/")[0]
-                for name in wheel.namelist()
-                if name.startswith(prefix) and name.count("/") > 2
-            }
+            carried = {release_key for release_key, _ in carried_builds(wheel.namelist())}
     except (zipfile.BadZipFile, OSError):
         return []
     return [

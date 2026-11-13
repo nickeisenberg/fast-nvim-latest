@@ -36,6 +36,7 @@ def run(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 300):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
+        env=clean_env(),
     )
 
 
@@ -68,6 +69,17 @@ def find_wheel(explicit: List[str]) -> Path:
         file=sys.stderr,
     )
     return candidates[-1]
+
+
+def first_line(output: bytes) -> str:
+    """The first line a command printed, or ``""`` if it printed nothing."""
+    lines = output.decode("utf-8", "replace").splitlines()
+    return lines[0] if lines else ""
+
+
+def clean_env() -> dict:
+    """This environment without $VIMRUNTIME/$VIM, which would override the probe."""
+    return {key: value for key, value in os.environ.items() if key not in ("VIMRUNTIME", "VIM")}
 
 
 def runtime_of(exe: Path) -> str:
@@ -140,7 +152,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = run([console, "run", release_key, "--", "--version"])
             if result.returncode:
                 fail(f"`run {release_key}` failed", result.stdout)
-            first = result.stdout.decode("utf-8", "replace").splitlines()[0]
+            first = first_line(result.stdout)
             if not first.startswith("NVIM "):
                 fail(f"run {release_key} printed {first!r}", result.stdout)
             print(f"  run {release_key}: {first}")
@@ -165,7 +177,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  setup {release_key}: $VIMRUNTIME={installed}")
 
             result = run([exe, "--version"])
-            first = result.stdout.decode("utf-8", "replace").splitlines()[0]
+            first = first_line(result.stdout)
             if result.returncode or not first.startswith("NVIM "):
                 fail("installed nvim --version failed", result.stdout)
             installed_versions[release_key] = first

@@ -41,6 +41,15 @@ def interesting_lines(text: str) -> List[str]:
     return lines[-MAX_LINES:]
 
 
+def escape(message: str) -> str:
+    """Escape a log line for a workflow command, as the Actions toolkit does.
+
+    Unescaped, a ``%0A`` in the log would be decoded into a line break and the
+    rest of the line read as a new command.
+    """
+    return message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def annotate(path: Path) -> int:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -51,8 +60,7 @@ def annotate(path: Path) -> int:
     if not picked:
         return 0
     for line in picked:
-        message = line.replace("\r", " ")
-        print(f"::error::[{path.name}] " + message[:MAX_CHARS])
+        print(f"::error::[{escape(path.name)}] " + escape(line[:MAX_CHARS]))
     return len(picked)
 
 

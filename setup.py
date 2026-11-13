@@ -14,11 +14,13 @@ when it builds a wheel for another platform.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import List, Tuple
 
 from setuptools import setup
+from setuptools.command.sdist import sdist
 from setuptools.dist import Distribution
 
 try:  # setuptools >= 70.1 ships the command itself
@@ -130,4 +132,23 @@ class PlatformWheel(bdist_wheel):
         super().run()
 
 
-setup(cmdclass={"bdist_wheel": PlatformWheel}, distclass=BinaryDistribution)
+class SourceDist(sdist):
+    """An sdist without vendored binaries.
+
+    ``MANIFEST.in`` has to include all of ``_nvim`` so a wheel built from a
+    vendored checkout carries the builds, but a source distribution built from
+    the same checkout must not quietly bundle every platform's binaries.  Only
+    the tracked files (Neovim's licenses and the directory marker) stay.
+    """
+
+    VENDORED = re.compile(r"^src/fast_nvim_release/_nvim/(?!LICENSE\.nvim-[^/]+\.txt$|\.gitkeep$)")
+
+    def make_release_tree(self, base_dir, files):
+        kept = [name for name in files if not self.VENDORED.match(name.replace(os.sep, "/"))]
+        super().make_release_tree(base_dir, kept)
+
+
+setup(
+    cmdclass={"bdist_wheel": PlatformWheel, "sdist": SourceDist},
+    distclass=BinaryDistribution,
+)

@@ -550,3 +550,78 @@ def test_version_reports_the_interpreter_arch(fake_bundle, capsys):
     assert "python_arch" in payload
     assert payload["emulated"] is False
     assert platforms.emulation_note() is None
+
+
+# --------------------------------------------------------------------------
+# review fixes
+# --------------------------------------------------------------------------
+def _capture_exec(monkeypatch):
+    calls = []
+
+    class Ran(Exception):
+        pass
+
+    def fake_exec(path, argv):
+        calls.append(list(argv[1:]))
+        raise Ran
+
+    def fake_call(argv):
+        calls.append(list(argv[1:]))
+        return 0
+
+    monkeypatch.setattr(cli.os, "execv", fake_exec)
+    monkeypatch.setattr(cli.subprocess, "call", fake_call)
+    return calls, Ran
+
+
+@pytest.mark.parametrize("word", ["new", "latest", "current", "auto", "default"])
+def test_run_passes_a_word_through_as_a_file_name(fake_bundle, monkeypatch, word):
+    calls, ran = _capture_exec(monkeypatch)
+    try:
+        main(["run", word])
+    except ran:
+        pass
+    assert calls == [[word]]
+
+
+def test_run_still_takes_a_version_as_the_release(fake_bundle, monkeypatch):
+    calls, ran = _capture_exec(monkeypatch)
+    seen = []
+    real = bundle.bundle_exe
+
+    def spy(release_key, platform_key):
+        seen.append(release_key)
+        return real(release_key, platform_key)
+
+    monkeypatch.setattr(bundle, "bundle_exe", spy)
+    try:
+        main(["run", OLDEST, "file.txt"])
+    except ran:
+        pass
+    assert calls == [["file.txt"]]
+    assert seen[-1] == OLDEST
+
+
+def test_a_host_word_names_the_platform_next_to_a_release(fake_bundle, prefix, capsys):
+    assert main(["setup", OLDEST, "auto", "--prefix", str(prefix), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"release {OLDEST} " in out
+    assert bundle_host() in out
+
+
+def test_debug_variable_shows_the_traceback(monkeypatch, capsys):
+    def boom(args):
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(cli, "cmd_version", boom)
+    monkeypatch.setenv("FAST_NVIM_RELEASE_DEBUG", "1")
+    with pytest.raises(SystemExit):
+        main(["version"])
+    err = capsys.readouterr().err
+    assert "Traceback" in err
+    assert "error: unexpected" in err
+
+    monkeypatch.delenv("FAST_NVIM_RELEASE_DEBUG")
+    with pytest.raises(SystemExit):
+        main(["version"])
+    assert "Traceback" not in capsys.readouterr().err

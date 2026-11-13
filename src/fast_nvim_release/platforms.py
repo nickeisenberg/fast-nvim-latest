@@ -14,6 +14,7 @@ pinned ``sha256``.  Everything else is derived from these two tables.
 
 from __future__ import annotations
 
+import functools
 import os
 import platform
 import re
@@ -572,14 +573,12 @@ def glibc_problem(target: Target) -> Optional[str]:
 # --------------------------------------------------------------------------
 # emulated interpreters (Rosetta 2, Windows on ARM)
 # --------------------------------------------------------------------------
-_ROSETTA: Dict[str, bool] = {}
-
-
+@functools.cache
 def _rosetta_active() -> bool:
-    """True if this process is translated by Rosetta 2 on Apple silicon."""
-    if "value" in _ROSETTA:
-        return _ROSETTA["value"]
-    active = False
+    """True if this process is translated by Rosetta 2 on Apple silicon.
+
+    Cached: the answer cannot change while the process runs.
+    """
     try:
         result = subprocess.run(
             ["sysctl", "-in", "sysctl.proc_translated"],
@@ -587,11 +586,9 @@ def _rosetta_active() -> bool:
             text=True,
             timeout=5,
         )
-        active = result.returncode == 0 and result.stdout.strip() == "1"
     except (OSError, subprocess.SubprocessError):  # pragma: no cover - no sysctl
-        active = False
-    _ROSETTA["value"] = active
-    return active
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "1"
 
 
 def emulation() -> Optional[Tuple[str, str]]:

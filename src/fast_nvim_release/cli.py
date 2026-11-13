@@ -6,9 +6,11 @@ import argparse
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Dict, List, NoReturn, Optional, Sequence, Tuple
 
@@ -75,7 +77,8 @@ def fail(message: str, code: int = 1) -> NoReturn:
     raise SystemExit(code)
 
 
-def _progress_printer(target: Target):
+def progress_printer(label: str):
+    """A download progress callback that redraws one stderr line (TTY only)."""
     state = {"last": -1}
 
     def report(done: int, total: int) -> None:
@@ -87,9 +90,7 @@ def _progress_printer(target: Target):
         state["last"] = percent
         done_text = bundle.human_size(done)
         total_text = bundle.human_size(total)
-        sys.stderr.write(
-            f"\r  downloading {target.asset} {percent:>3}%  {done_text}/{total_text}   "
-        )
+        sys.stderr.write(f"\r  {label} {percent:>3}%  {done_text}/{total_text}   ")
         sys.stderr.flush()
         if done >= total:
             sys.stderr.write("\n")
@@ -106,6 +107,11 @@ def _looks_numeric(value: str) -> bool:
     return bool(text) and text[0].isdigit()
 
 
+#: Words ``parse_target`` reads as "this machine"; some of them would also
+#: parse as "the default release", but as a selector they name the platform.
+_HOST_WORDS = ("auto", "host", "this", "here")
+
+
 def _split_selectors(selectors: Sequence[str]) -> Tuple[str, Optional[str]]:
     """Classify positional arguments into ``(release, platform)``.
 
@@ -115,7 +121,8 @@ def _split_selectors(selectors: Sequence[str]) -> Tuple[str, Optional[str]]:
     release_key: Optional[str] = None
     platform_spec: Optional[str] = None
     for value in selectors:
-        if looks_like_release(value) or _looks_numeric(value):
+        is_host_word = value.strip().lower() in _HOST_WORDS
+        if not is_host_word and (looks_like_release(value) or _looks_numeric(value)):
             # a numeric argument is a release even when it is not one we know,
             # so the error says "unknown Neovim release", not "unknown platform"
             if release_key is not None:
@@ -182,6 +189,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
     info(f"   prefix  {prefix}")
     if cross:
         _warn_if_replacing_this_machines_build(prefix, target)
+    if bundle.cache_is_shared() and not bundle.has_bundled(target):
+        warn(
+            f"the cache {bundle.cache_root()} can be written by other users; anyone who "
+            "can write there can change the Neovim installed from it"
+        )
     note = emulation_note()
     if note and not cross:
         warn(note)
@@ -209,12 +221,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
         source_dir, origin = bundle.ensure_bundle(
             target,
             offline=args.offline,
-            progress=None if args.quiet else _progress_printer(target),
+            progress=None if args.quiet else progress_printer(f"downloading {target.asset}"),
         )
     except FastNvimError as exc:
         fail(str(exc))
 
     info(f"   source  {origin} ({source_dir})")
+    if args.link and origin != "pip wheel":
+        warn(
+            f"--link points into the download cache ({source_dir}); clearing the cache "
+            "breaks this install"
+        )
 
     try:
         result = bundle.install(
@@ -222,7 +239,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             source_dir,
             prefix,
             link=args.link,
-            replace=bool(args.force) and not managed,
+            replace=bool(args.force),
         )
     except FastNvimError as exc:
         fail(str(exc))
@@ -451,7 +468,9 @@ def cmd_run(argv: Sequence[str]) -> int:
     """``fast-nvim-release run [RELEASE] [--] [nvim args...]``."""
     args = list(argv)
     release_key = DEFAULT_RELEASE
-    if args and args[0] != "--" and looks_like_release(args[0]):
+    # only a version-looking first argument (0.10, v0.11, 12) is a release:
+    # words such as `new` or `latest` are far more likely to be file names
+    if args and args[0] != "--" and _looks_numeric(args[0]) and looks_like_release(args[0]):
         release_key = parse_release(args[0])
         args = args[1:]
     if args and args[0] == "--":
@@ -479,7 +498,13 @@ def cmd_run(argv: Sequence[str]) -> int:
     exe = bundle.bundle_exe(target.release_key, target.key)
     bundle.ensure_executable(exe)
     if os.name == "nt":
-        return subprocess.call([str(exe), *args])
+        # Ctrl-C reaches every process on the console; Neovim handles it, and
+        # this launcher must not die (or kill the editor) because of it
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            return subprocess.call([str(exe), *args])
+        finally:
+            signal.signal(signal.SIGINT, previous)
     os.execv(str(exe), [str(exe), *args])  # replaces this process
     return 0  # pragma: no cover
 
@@ -487,6 +512,9 @@ def cmd_run(argv: Sequence[str]) -> int:
 # --------------------------------------------------------------------------
 # parser
 # --------------------------------------------------------------------------
+_DEFAULT_PREFIX_HELP = r"%%LOCALAPPDATA%%\fast-nvim-release" if os.name == "nt" else "~/.local"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -522,7 +550,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--link",
         action="store_true",
-        help="symlink into the package instead of copying (breaks if the package is removed)",
+        help="symlink into the package (or download cache) instead of copying; "
+        "breaks if either is removed",
     )
     setup.add_argument(
         "--dry-run",
@@ -546,7 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     path.add_argument("selectors", nargs="*", metavar="RELEASE|PLATFORM", help=selector_help)
     path.add_argument("--arch")
-    path.add_argument("--prefix", help="prefix to inspect (default: ~/.local)")
+    path.add_argument("--prefix", help=f"prefix to inspect (default: {_DEFAULT_PREFIX_HELP})")
     path.add_argument("--bundle", action="store_true", help="print the in-package bundle dir")
     path.add_argument(
         "--installed-only",
@@ -561,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     version.add_argument("selectors", nargs="*", metavar="RELEASE|PLATFORM", help=selector_help)
     version.add_argument("--arch")
-    version.add_argument("--prefix", help="prefix to inspect (default: ~/.local)")
+    version.add_argument("--prefix", help=f"prefix to inspect (default: {_DEFAULT_PREFIX_HELP})")
     version.add_argument("--json", action="store_true")
     version.set_defaults(func=cmd_version)
 
@@ -588,28 +617,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
 
-    # `run` hands everything after it to Neovim, so it never goes through
-    # argparse (which would eat nvim's own --flags).
-    if args and args[0] == "run":
-        return cmd_run(args[1:])
     if not args or args[0] in ("-h", "--help", "help"):
         print(parser.format_help().rstrip())
         return 0
-
-    parsed = parser.parse_args(args)
-    func = getattr(parsed, "func", None)
-    if func is None:  # pragma: no cover - subparsers always set one
-        print(parser.format_help().rstrip())
-        return 0
     try:
+        # `run` hands everything after it to Neovim, so it never goes through
+        # argparse (which would eat nvim's own --flags).
+        if args[0] == "run":
+            return cmd_run(args[1:])
+        parsed = parser.parse_args(args)
+        func = getattr(parsed, "func", None)
+        if func is None:  # pragma: no cover - subparsers always set one
+            print(parser.format_help().rstrip())
+            return 0
         return int(func(parsed) or 0)
     except FastNvimError as exc:
         fail(str(exc))
-    except ValueError as exc:
-        fail(str(exc))
-    except OSError as exc:
+    except (ValueError, OSError) as exc:
+        # bad input and file system trouble are reported as one line; set
+        # FAST_NVIM_RELEASE_DEBUG=1 to see where an unexpected one came from
+        if os.environ.get("FAST_NVIM_RELEASE_DEBUG"):
+            traceback.print_exc()
         fail(str(exc))
     except KeyboardInterrupt:
         print("", file=sys.stderr)
         return 130
-    return 0

@@ -46,6 +46,7 @@ from fast_nvim_release.platforms import (  # noqa: E402
     PLATFORMS,
     RELEASE_KEYS,
     RELEASES,
+    Release,
     Target,
 )
 
@@ -91,7 +92,9 @@ def _request(url: str, token: Optional[str], timeout: float) -> Tuple[bytes, obj
         },
     )
     if token:
-        request.add_header("Authorization", f"Bearer {token}")
+        # unredirected: release downloads redirect to another host, and urllib
+        # would otherwise forward the token there too
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
     for attempt in range(ATTEMPTS):
         more = attempt + 1 < ATTEMPTS
         try:
@@ -342,7 +345,12 @@ def _state(pinned: str, upstream: str) -> str:
 
 
 def _check_payload(
-    flat, release_json, known_assets, report, checksum_source, verify_checksums
+    flat: Release,
+    release_json: dict,
+    known_assets: Dict[str, str],
+    report: Report,
+    checksum_source: Optional[Callable[[Target], Optional[str]]],
+    verify_checksums: bool,
 ) -> None:
     """Checksums, sizes and asset coverage of one pinned release line."""
     assets = {
@@ -406,7 +414,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--timeout", type=float, default=30.0, help="per-request timeout")
     parser.add_argument(
-        "--token", help="GitHub token (default: $GITHUB_TOKEN, to lift the API rate limit)"
+        "--token",
+        help="GitHub token to lift the API rate limit (default: $GITHUB_TOKEN; prefer the "
+        "variable, since a command-line argument is visible to other local users)",
     )
     args = parser.parse_args(argv)
     token = args.token or os.environ.get("GITHUB_TOKEN") or None

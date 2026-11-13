@@ -152,9 +152,10 @@ Platforms can be spelled loosely: `linux`, `mac`, `macos`, `osx`, `darwin`,
 The machine you are on is the default.
 
 `run` takes an optional release and then hands everything else to Neovim
-verbatim, flags included (put `--` after the release if a Neovim argument could
-be mistaken for one): `fast-nvim-release run -- -u NONE --headless "+q"`, or
-`fast-nvim-release run 0.10 -- --version`.
+verbatim, flags included: `fast-nvim-release run -- -u NONE --headless "+q"`,
+or `fast-nvim-release run 0.10 -- --version`. Only a version (`0.10`, `v0.11`,
+`12`) is read as the release, so `run new` or `run latest` opens a file of that
+name; put `--` first to open a file called `0.10`.
 
 ### Scripting
 
@@ -179,11 +180,12 @@ true, which is the check to use in a script.
 ## Environment variables
 
 `FAST_NVIM_RELEASE_CACHE_DIR` is the only variable that changes where the tool
-keeps its files:
+keeps its files; `FAST_NVIM_RELEASE_DEBUG` only changes what an error prints:
 
 | Variable | Effect |
 | --- | --- |
-| `FAST_NVIM_RELEASE_CACHE_DIR` | Where downloaded archives and extracted builds are kept. Default: `~/.cache/fast-nvim-release`, or `$XDG_CACHE_HOME/fast-nvim-release` when that is set. Point it at a bigger disk or a shared directory when your home cache is small or read-only. |
+| `FAST_NVIM_RELEASE_CACHE_DIR` | Where downloaded archives and extracted builds are kept. Default: `~/.cache/fast-nvim-release`, or `$XDG_CACHE_HOME/fast-nvim-release` when that is set. Point it at a bigger disk or a shared directory when your home cache is small or read-only. Extracted builds are used as they are, so anyone who can write to a shared cache can change the Neovim installed from it; `setup` warns when other users can write there. |
+| `FAST_NVIM_RELEASE_DEBUG` | Set to any value to print a traceback along with an unexpected `error:` message (for bug reports). |
 
 `NO_COLOR` turns off the coloured `error:`/`warning:` prefixes when set to a
 non-empty value, as [no-color.org](https://no-color.org) describes;

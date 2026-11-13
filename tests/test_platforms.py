@@ -422,10 +422,13 @@ def test_rosetta_probe_is_cheap_and_cached(monkeypatch):
         return Result()
 
     monkeypatch.setattr(platforms.subprocess, "run", fake_run)
-    monkeypatch.setattr(platforms, "_ROSETTA", {})
-    assert platforms._rosetta_active() is True
-    assert platforms._rosetta_active() is True
-    assert len(calls) == 1  # one sysctl per process
+    platforms._rosetta_active.cache_clear()
+    try:
+        assert platforms._rosetta_active() is True
+        assert platforms._rosetta_active() is True
+        assert len(calls) == 1  # one sysctl per process
+    finally:
+        platforms._rosetta_active.cache_clear()
 
 
 def test_rosetta_probe_survives_a_missing_sysctl(monkeypatch):
@@ -433,5 +436,8 @@ def test_rosetta_probe_survives_a_missing_sysctl(monkeypatch):
         raise OSError("no sysctl here")
 
     monkeypatch.setattr(platforms.subprocess, "run", boom)
-    monkeypatch.setattr(platforms, "_ROSETTA", {})
-    assert platforms._rosetta_active() is False
+    platforms._rosetta_active.cache_clear()
+    try:
+        assert platforms._rosetta_active() is False
+    finally:
+        platforms._rosetta_active.cache_clear()

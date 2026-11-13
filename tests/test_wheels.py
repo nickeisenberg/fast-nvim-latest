@@ -551,12 +551,29 @@ TOOL_SPEC = re.compile(
 )
 
 
-def _tool_specs(name: str) -> List[Tuple[str, str, str, str]]:
-    """``(name, version, operator, python_version)`` for every pin in a workflow."""
-    found = []
+REQUIREMENTS = SCRIPTS.parent / "requirements-ci.txt"
+
+
+def _pin_lines(name: str) -> List[str]:
+    """Lines of a workflow that pin tools, with ``-r requirements-ci.txt`` inlined."""
+    lines = []
     for line in _workflow(name).splitlines():
         if "pip install" not in line:
             continue
+        lines.append(line)
+        if "-r requirements-ci.txt" in line:
+            lines += [
+                entry
+                for entry in REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+                if entry.strip() and not entry.lstrip().startswith("#")
+            ]
+    return lines
+
+
+def _tool_specs(name: str) -> List[Tuple[str, str, str, str]]:
+    """``(name, version, operator, python_version)`` for every pin in a workflow."""
+    found = []
+    for line in _pin_lines(name):
         for match in TOOL_SPEC.finditer(line):
             if match.group("name") == "pip":  # `--upgrade pip` is not a pin
                 continue
@@ -586,7 +603,32 @@ def test_release_workflow_uses_only_pins_that_ci_validates():
     """ci.yml runs the full matrix, so a release-only pin would be unproven."""
     validated = set(_tool_specs("ci.yml"))
     used = set(_tool_specs("release.yml"))
+    assert used, "release.yml installs no pinned tools"
     assert used <= validated, f"release.yml pins tools ci.yml does not: {used - validated}"
+
+
+def test_both_workflows_install_the_shared_tool_list():
+    for name in ("ci.yml", "release.yml"):
+        assert "pip install -r requirements-ci.txt" in _workflow(name), name
+
+
+def test_every_action_is_pinned_to_a_commit():
+    """A tag or branch (`release/v1`) can be moved under a job with id-token: write."""
+    offenders = []
+    for name in ("ci.yml", "release.yml", "upstream.yml"):
+        for line in _workflow(name).splitlines():
+            if "uses:" not in line:
+                continue
+            ref = line.split("uses:", 1)[1].split("#", 1)[0].strip()
+            if not re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref):
+                offenders.append(f"{name}: {ref}")
+    assert offenders == []
+
+
+def test_a_manual_run_on_a_tag_never_publishes_to_pypi():
+    real = _workflow("release.yml").split("publish-pypi:", 1)[1]
+    condition = next(line for line in real.splitlines() if line.strip().startswith("if:"))
+    assert "github.event_name == 'push'" in condition
 
 
 def test_a_pin_that_needs_a_newer_python_has_a_fallback():
@@ -659,9 +701,10 @@ def test_a_test_that_runs_the_fake_binary_is_posix_only():
 def test_the_lint_and_test_tools_are_pinned():
     """An unpinned ruff turns green CI red without a code change."""
     for name in ("ci.yml", "release.yml"):
-        for line in _workflow(name).splitlines():
-            if "pip install" in line and (" ruff" in line or "pytest" in line):
+        for line in _pin_lines(name):
+            if " ruff" in line or "pytest" in line:
                 assert "==" in line, (name, line.strip())
+    assert any("pytest==" in line for line in _pin_lines("ci.yml"))
 
 
 def test_a_release_is_never_cancelled_by_concurrency():
@@ -727,3 +770,14 @@ def test_a_windows_wheel_needs_no_posix_exec_bit(tmp_path):
             dst.writestr(item, data)
     shutil.move(str(rebuilt) + ".new", path)
     assert check_wheels.check(path) == []
+
+
+def test_ci_annotations_escape_workflow_command_syntax(tmp_path, capsys):
+    import annotate_ci_failures
+
+    log = tmp_path / "pytest.log"
+    log.write_text("FAILED x - 100% broken%0A::warning::injected\n", encoding="utf-8")
+    assert annotate_ci_failures.main([str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "100%25 broken%250A::warning::injected" in out
+    assert "\n::warning::" not in out

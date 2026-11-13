@@ -529,3 +529,31 @@ def test_every_pinned_checksum_is_the_published_one(upstream_report):
         + ", ".join(upstream_report.unverified)
     )
     assert upstream_report.checked == TOTAL_ASSETS
+
+
+def test_the_token_is_never_forwarded_on_a_redirect(monkeypatch):
+    """Release downloads redirect off github.com; the token must stay behind."""
+    seen = []
+
+    class Response:
+        def __init__(self):
+            self.headers = {}
+
+        def read(self):
+            return b"[]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen.append(request)
+        return Response()
+
+    monkeypatch.setattr(check_upstream.urllib.request, "urlopen", fake_urlopen)
+    check_upstream._request("https://example.invalid/x", "secret-token", 5)
+    request = seen[0]
+    assert request.unredirected_hdrs.get("Authorization") == "Bearer secret-token"
+    assert "Authorization" not in request.headers
