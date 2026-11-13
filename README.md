@@ -143,81 +143,10 @@ Two details worth knowing:
   `manylinux_2_34` tag. musl systems (Alpine) are not supported by Neovim's
   official builds.
 
-## Publishing to PyPI
-
-The repo is set up for [trusted publishing](https://docs.pypi.org/trusted-publishers/)
-—no API tokens in CI.
-
-1. Bump `__version__` in `src/fast_nvim_latest/__init__.py`.
-2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
-3. `.github/workflows/wheels.yml` builds all six wheels, validates each one
-   (tag vs. binary, runtime, license, version == tag) and publishes to PyPI.
-
-To publish by hand:
-
-```console
-$ python scripts/fetch_nvim.py --all        # vendor all six builds (or use the cache)
-$ python scripts/build_wheels.py --all      # dist/*.whl, ~12 MB each
-$ python -m twine check dist/*
-$ python -m twine upload dist/*
-```
-
-For a dry run, publish to TestPyPI and install from there:
-
-```console
-$ python -m twine upload --repository testpypi dist/*
-$ pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple fast-nvim-latest
-```
-
-Prefer `python scripts/build_wheels.py --all` for local builds: it vendors each
-platform into a throwaway copy of the tree and sets
-`FAST_NVIM_LATEST_PLAT_TAG`, so cross-built wheels are tagged correctly. Never
-upload a wheel whose tag does not match its payload—`setup.py` refuses to build
-one when it can tell, and `scripts/check_wheels.py` checks the finished
-artifacts (tag vs. payload, the architecture and glibc/macOS floor *read out of
-the binary*, the runtime, `Root-Is-Purelib: false`, Neovim's license, one
-version across all wheels and size under PyPI's limit).
-
-Only wheels are published—no source distribution. Building from an sdist on a
-platform with no vendored binary would produce a useless package, so `setup.py`
-aborts that build instead; on an unsupported platform pip simply reports that
-no matching distribution exists.
-
-Before your first upload, register the project's publisher on PyPI
-(Your projects → Publishing) for owner/repo and the `pypi` environment used by
-the workflow. The names `fast-nvim-latest` and `fast-nvim` are both currently
-unclaimed on PyPI (checked 2026-11-13).
-
-## Updating Neovim
-
-Neovim's version and the sha256 of every release asset are pinned in
-`src/fast_nvim_latest/platforms.py` (`NVIM_VERSION`, `TARGETS`). To move to a
-new release:
-
-```console
-$ # bump NVIM_VERSION and the sha256/size values, then:
-$ python scripts/fetch_nvim.py --all
-$ python scripts/build_wheels.py --all
-```
-
-`scripts/fetch_nvim.py` verifies every download against its pinned sha256,
-re-vendors a build whose `BUILD_INFO.json` no longer matches the pin (so a
-version bump cannot silently keep the old binary), and for the host platform
-runs `nvim --version` to confirm the binary works.
-
-## Environment
-
-| Variable | Effect |
-| --- | --- |
-| `FAST_NVIM_LATEST_PREFIX` | Default install prefix, same as `--prefix` |
-| `FAST_NVIM_LATEST_CACHE_DIR` | Where downloaded archives/trees are kept (`~/.cache/fast-nvim-latest`) |
-| `XDG_CACHE_HOME` | Used for the cache location when set |
-| `NO_COLOR` / `FORCE_COLOR` | Turn the little colour there is off / on |
-
 ## Development
 
 ```console
-$ python -m pytest                 # 114 tests, no network needed
+$ python -m pytest                 # 132 tests, no network needed
 $ python -m ruff check .           # lint (CI runs this)
 $ python -m ruff format --check .
 $ python scripts/fetch_nvim.py     # vendor this platform into the source tree
@@ -234,25 +163,8 @@ setup.py                        platform wheel tags, refuses empty/mislabelled w
 scripts/fetch_nvim.py           download/extract release archives into the package
 scripts/build_wheels.py         build all six wheels from one machine
 scripts/check_wheels.py         validate wheels (tag vs. binary, runtime, license)
-scripts/smoke_test.py      install a wheel in a clean venv and use it
+scripts/smoke_test.py           install a wheel in a clean venv and use it
 ```
-
-## Notes
-
-* `fast-nvim-latest setup` never overwrites an `nvim`, `lib/nvim` or
-  `share/nvim/runtime` it did not install; use `--force` if you really mean it.
-* Re-running `setup` upgrades an existing fast-nvim-latest install in place and
-  removes the files the previous version owned, so you never end up with a mix
-  of two Neovim runtimes.
-* The post-install check runs the installed binary and compares the
-  `$VIMRUNTIME` it actually resolved with the prefix (`--no-verify` skips it).
-  `nvim --version` alone would pass even with the runtime missing.
-* `--link` keeps disk usage at zero extra bytes but breaks if the virtualenv
-  is removed; the default is to copy (the runtime is ~35 MB).
-* Uninstalling the package does not remove a copy made by
-  `fast-nvim-latest setup`. Delete `~/.local/bin/nvim`, `~/.local/lib/nvim`,
-  `~/.local/share/nvim/runtime` and `~/.local/share/fast-nvim-latest` to undo
-  it (on Windows the prefix is `%LOCALAPPDATA%\fast-nvim-latest`).
 
 ## License
 
