@@ -757,6 +757,60 @@ def _drop_other_installs(prefix: Path, keep: Tuple[str, str]) -> List[str]:
     return stale
 
 
+def _stage_parts(bundle_dir: Path, staging: Path, *, link: bool) -> Tuple[int, int]:
+    """Copy or link every part of ``bundle_dir`` into ``staging``.
+
+    :returns: ``(files copied, links made)``.
+    """
+    files = 0
+    links = 0
+    for part, destination in BUNDLE_PARTS:
+        source = bundle_dir / part
+        if not source.exists():
+            continue
+        staged = staging / destination
+        if link:
+            if part == "bin":
+                # link executables/DLLs one by one so the merge into prefix/bin
+                # can leave that directory's other contents alone
+                staged.mkdir(parents=True, exist_ok=True)
+                for entry in sorted(source.iterdir()):
+                    if entry.is_dir():
+                        links += _link_tree(entry, staged / entry.name)
+                    else:
+                        links += _link_file(entry, staged / entry.name)
+            else:
+                links += _link_tree(source, staged)
+        else:
+            files += _copy_tree(source, staged)
+    return files, links
+
+
+def _swap_parts(staging: Path, prefix: Path, *, merge_bin: bool) -> None:
+    """Move the staged parts into ``prefix``.
+
+    ``bin`` is merged, because a prefix's ``bin`` usually holds other tools;
+    everything else is replaced as a whole.  Only renames happen here, so the
+    window where a prefix holds a half-updated tree is as short as it can be.
+    """
+    for _part, destination in BUNDLE_PARTS:
+        staged = staging / destination
+        target = prefix / destination
+        if not staged.exists() and not staged.is_symlink():
+            continue
+        if merge_bin and destination == "bin":
+            target.mkdir(parents=True, exist_ok=True)
+            for entry in sorted(staged.iterdir()):
+                out = target / entry.name
+                if out.is_symlink() or out.exists():
+                    _remove(out)
+                os.replace(entry, out)
+        else:
+            _remove(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged, target)
+
+
 def install(
     target: Target,
     bundle_dir: Path,
@@ -774,6 +828,11 @@ def install(
     directories even when the prefix has no marker yet (``setup --force``), and
     always forgets any other build in the same prefix: a prefix holds exactly
     one Neovim, so it is also how ``setup 0.10`` replaces ``setup 0.12``.
+
+    The tree is staged inside the prefix and swapped in only once every file has
+    been written, so a failure while copying (a full disk, an unreadable source
+    file) leaves the previous install exactly as it was instead of a mix of the
+    two -- the same guarantee ``extract_archive`` gives the cache.
     """
     prefix = normalize(prefix)
     bundle_dir = Path(bundle_dir)
@@ -783,6 +842,7 @@ def install(
     files = 0
     links = 0
     written: List[Path] = []
+    staging = prefix / MARKER_DIR / ".staging"
 
     with _lock(prefix / MARKER_DIR / ".lock"):
         managed = is_managed(prefix, target.release_key, target.key)
@@ -790,14 +850,6 @@ def install(
         others = [
             build for build in installed_builds(prefix) if build != (target.release_key, target.key)
         ]
-        stale_names = _drop_other_installs(prefix, (target.release_key, target.key))
-        if managed or replace or others:
-            for _, destination in BUNDLE_PARTS:
-                if destination != "bin":
-                    _remove(prefix / destination)
-            for name in list(previous.get("bin") or []) + stale_names:
-                if name not in bin_names and _plain_name(name):
-                    _remove(prefix / "bin" / name)
         # written before the copy: if this process dies half way, the next
         # `setup` recognises the prefix as its own instead of demanding --force
         _write_marker(
@@ -809,27 +861,23 @@ def install(
             bin_names=bin_names,
             complete=False,
         )
+        try:
+            _remove(staging)  # left behind by a killed install
+            files, links = _stage_parts(bundle_dir, staging, link=link)
+            for part, destination in BUNDLE_PARTS:
+                if (bundle_dir / part).exists():
+                    written.append(prefix / destination)
+            _swap_parts(staging, prefix, merge_bin=True)
+        finally:
+            _remove(staging)
 
-        for part, destination in BUNDLE_PARTS:
-            source = bundle_dir / part
-            if not source.exists():
-                continue
-            dest = prefix / destination
-            written.append(dest)
-            if link:
-                if part == "bin":
-                    # link executables/DLLs one by one so prefix/bin keeps its
-                    # other contents
-                    dest.mkdir(parents=True, exist_ok=True)
-                    for entry in sorted(source.iterdir()):
-                        if entry.is_dir():
-                            links += _link_tree(entry, dest / entry.name)
-                        else:
-                            links += _link_file(entry, dest / entry.name)
-                else:
-                    links += _link_tree(source, dest)
-            else:
-                files += _copy_tree(source, dest)
+        # only now is the new build in place: forgetting the previous build (and
+        # the bin entries it owned) can no longer strand the prefix
+        stale_names = _drop_other_installs(prefix, (target.release_key, target.key))
+        if managed or replace or others:
+            for name in list(previous.get("bin") or []) + stale_names:
+                if name not in bin_names and _plain_name(name):
+                    _remove(prefix / "bin" / name)
 
         exe = prefix / "bin" / target.exe
         if not exe.is_file():

@@ -390,6 +390,56 @@ def test_failed_install_leaves_a_recoverable_prefix(fake_bundle, prefix, host_ke
 
 
 @POSIX_ONLY
+def test_a_failed_copy_never_destroys_the_working_install(
+    fake_bundle, prefix, host_key, monkeypatch
+):
+    """A full disk half way through an upgrade must leave the old build usable."""
+    newest, oldest = RELEASE_KEYS[-1], RELEASE_KEYS[0]
+    keep = RELEASES[newest].target(host_key)
+    bundle.install(keep, bundle.bundle_path(newest, host_key), prefix)
+    runtime = prefix / "share" / "nvim" / "runtime" / "init.lua"
+    before = runtime.read_bytes()
+
+    def explode(source, dest):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(bundle, "_copy_tree", explode)
+    with pytest.raises(OSError):
+        bundle.install(
+            RELEASES[oldest].target(host_key), bundle.bundle_path(oldest, host_key), prefix
+        )
+
+    # the previous release is still complete, still linked to its own marker,
+    # and the half-staged tree is gone
+    assert runtime.read_bytes() == before
+    assert bundle.is_complete(prefix, newest, host_key)
+    assert bundle.is_complete(prefix, oldest, host_key) is False
+    assert not (prefix / bundle.MARKER_DIR / ".staging").exists()
+    assert (
+        bundle.neovim_version(prefix / "bin" / keep.exe) == f"NVIM {RELEASES[newest].version[1:]}"
+    )
+
+
+@POSIX_ONLY
+def test_a_leftover_staging_tree_is_cleared(fake_bundle, prefix, host_key):
+    staging = prefix / bundle.MARKER_DIR / ".staging"
+    (staging / "lib" / "nvim").mkdir(parents=True)
+    (staging / "lib" / "nvim" / "stale.so").write_bytes(b"old")
+    bundle.install(RELEASES["0.12"].target(host_key), bundle.bundle_path("0.12", host_key), prefix)
+    assert not staging.exists()
+    assert not (prefix / "lib" / "nvim" / "stale.so").exists()
+    assert bundle.is_complete(prefix, "0.12", host_key)
+
+
+@POSIX_ONLY
+def test_staging_is_not_left_behind_by_a_successful_install(fake_bundle, prefix, host_key):
+    target = RELEASES["0.12"].target(host_key)
+    bundle.install(target, bundle.bundle_path("0.12", host_key), prefix)
+    assert not (prefix / bundle.MARKER_DIR / ".staging").exists()
+    assert bundle.neovim_version(prefix / "bin" / target.exe) == "NVIM 0.12.6"
+
+
+@POSIX_ONLY
 def test_a_lock_left_by_a_dead_process_is_ignored(fake_bundle, prefix, host_key):
     lock = prefix / bundle.MARKER_DIR / ".lock"
     lock.parent.mkdir(parents=True)
