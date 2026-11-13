@@ -441,11 +441,21 @@ def test_ci_failure_annotations_are_extracted_from_a_log(tmp_path, capsys):
     assert "::error::E   RuntimeError: boom" in out
 
 
-def test_ci_annotations_do_not_invent_failures(tmp_path, capsys):
+def test_ci_annotations_fall_back_to_the_tail_of_the_log(tmp_path, capsys):
     import annotate_ci_failures
 
-    log = tmp_path / "pytest.log"
-    log.write_text("135 passed in 0.9s\n", encoding="utf-8")
+    log = tmp_path / "validate.log"
+    log.write_text("building...\nexit 1\n", encoding="utf-8")
+    assert annotate_ci_failures.main([str(log)]) == 0
+    out = capsys.readouterr().out
+    assert "::error::exit 1" in out
+
+
+def test_an_empty_log_reports_nothing_but_warns(tmp_path, capsys):
+    import annotate_ci_failures
+
+    log = tmp_path / "empty.log"
+    log.write_text("", encoding="utf-8")
     assert annotate_ci_failures.main([str(log)]) == 0
     out = capsys.readouterr().out
     assert "::error::" not in out

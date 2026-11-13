@@ -58,10 +58,6 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q 2>&1 | tee pytest.log
-      - name: surface test failures as annotations
-        if: failure()
-        shell: bash
-        run: python scripts/annotate_ci_failures.py pytest.log
       - name: restore the Neovim archive cache
         uses: actions/cache@v4
         with:
@@ -72,8 +68,16 @@ jobs:
       - name: build the wheel
         run: python -m build --wheel --outdir dist
       - name: validate the wheel
+        shell: bash
         run: |
-          python -m twine check dist/*
-          python scripts/check_wheels.py
+          set -o pipefail
+          { python -m twine check dist/*; python scripts/check_wheels.py; } 2>&1 | tee validate.log
       - name: install it and use it
-        run: python scripts/smoke_test.py
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/smoke_test.py 2>&1 | tee smoke.log
+      - name: surface failures as annotations
+        if: failure()
+        shell: bash
+        run: python scripts/annotate_ci_failures.py pytest.log validate.log smoke.log

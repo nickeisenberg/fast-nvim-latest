@@ -20,7 +20,11 @@ INTERESTING = ("FAILED", "ERROR", "Error:", "assert", "Exception", "Traceback")
 
 
 def interesting_lines(text: str) -> List[str]:
-    """The lines worth publishing: failures first, then their context."""
+    """The lines worth publishing: failures first, then their context.
+
+    A command that fails without a recognisable message still needs to be
+    diagnosable, so the tail of the log is the last resort.
+    """
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     picked = [line for line in lines if line.startswith(INTERESTING)]
     for line in lines:
@@ -28,7 +32,7 @@ def interesting_lines(text: str) -> List[str]:
             break
         if line not in picked and any(word in line for word in INTERESTING):
             picked.append(line)
-    return picked[:MAX_LINES]
+    return picked[:MAX_LINES] or lines[-MAX_LINES:]
 
 
 def annotate(path: Path) -> int:
@@ -39,7 +43,7 @@ def annotate(path: Path) -> int:
         return 0
     picked = interesting_lines(text)
     if not picked:
-        print(f"::warning::{path} has no recognisable failure lines (empty or passed)")
+        print(f"::warning::{path} is empty, nothing to report")
         return 0
     for line in picked:
         print("::error::" + line.replace("\r", " ")[:MAX_CHARS])
