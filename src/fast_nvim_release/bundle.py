@@ -457,14 +457,20 @@ def extract_archive(target: Target, archive: Path, dest: Path) -> Path:
 
 
 # --------------------------------------------------------------------------
-# archive -> tree swap
+# tree swap leftovers
 # --------------------------------------------------------------------------
 def remove_stale_backups(directory: Path) -> None:
-    """Delete ``<target>.old`` trees left behind by a killed extraction."""
+    """Delete ``<platform>.old`` trees left behind by a killed extraction.
+
+    A tree lives at ``<root>/<release>/<platform>``, so its backup sits one
+    level *below* the root this is given (``<root>/<release>/<platform>.old``).
+    The root itself is swept too: a pre-rename layout, or a hand-assembled
+    tree, would have put it there.
+    """
     if not directory.is_dir():
         return
-    for backup in directory.glob("*.old"):
-        if backup.is_dir():
+    for backup in list(directory.glob("*.old")) + list(directory.glob("*/*.old")):
+        if backup.is_dir() and not backup.is_symlink():
             shutil.rmtree(backup, ignore_errors=True)
 
 
