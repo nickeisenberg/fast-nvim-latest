@@ -356,15 +356,24 @@ def test_fetch_nvim_list_does_not_need_the_network(capsys):
         assert RELEASES[key].version in out
 
 
-def test_fetch_nvim_tolerates_a_platform_one_release_never_had(tmp_path, capsys):
-    """0.10 has no Windows-on-ARM build; `--platform` for a whole wheel must work."""
-    for release_key in ("0.11", "0.12"):
-        fetch_nvim.license_file(tmp_path, release_key).write_text("Apache-2.0\n")
+def test_fetch_nvim_tolerates_a_platform_one_release_never_had(tmp_path, monkeypatch, capsys):
+    """0.10 has no Windows-on-ARM build; `--platform` for a whole wheel must work.
+
+    Vendoring itself is stubbed out: what matters here is which builds get
+    selected, not the download (which would need the network).
+    """
+    seen = []
+
+    def fake_vendor(target, dest_root, *, offline=False, force=False):
+        seen.append(target.label)
+        return fetch_nvim.SKIPPED
+
+    monkeypatch.setattr(fetch_nvim, "vendor", fake_vendor)
     code = fetch_nvim.main(["--platform", "windows-arm64", "--dest", str(tmp_path), "--offline"])
     out = capsys.readouterr().out
     assert code == 0, out
     assert "skipping 0.10/windows-arm64" in out
-    assert not (tmp_path / "0.10" / "windows-arm64").exists()
+    assert seen == ["0.11/windows-arm64", "0.12/windows-arm64"]
 
 
 def test_fetch_nvim_fails_when_you_explicitly_ask_for_an_impossible_build(tmp_path, capsys):

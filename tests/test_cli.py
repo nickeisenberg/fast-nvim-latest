@@ -213,6 +213,7 @@ def test_version_human(fake_bundle, capsys):
         assert RELEASES[key].version in out
 
 
+@POSIX_ONLY
 def test_version_restores_the_exec_bit_before_running_the_binary(fake_bundle, capsys):
     """pip does not always keep the exec bit; version must still work."""
     exe = bundle.bundle_exe(NEWEST, bundle_host())
